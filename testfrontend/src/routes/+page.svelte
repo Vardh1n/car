@@ -9,6 +9,10 @@
   let currentAction = 'stopped';
   let errorMessage = '';
   
+  // Individual motor states
+  let rightMotorState = 'stopped';
+  let leftMotorState = 'stopped';
+  
   // Connection status check
   async function checkConnection() {
     if (!serverUrl) {
@@ -95,12 +99,65 @@
       errorMessage = `Command error: ${error.message}`;
     }
   }
+
+  // Individual motor control
+  async function controlIndividualMotor(motor, action, speed = currentSpeed) {
+    if (!connected) {
+      alert('Please connect to the car first!');
+      return;
+    }
+    
+    try {
+      const url = action === 'stop' 
+        ? `${serverUrl}/${motor}-motor/stop` 
+        : `${serverUrl}/${motor}-motor/${action}?speed=${speed}`;
+      
+      const response = await fetch(url, { 
+        method: 'POST',
+        mode: 'cors'
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Individual motor command sent:', data);
+        
+        // Update motor state
+        if (motor === 'right') {
+          rightMotorState = action;
+        } else if (motor === 'left') {
+          leftMotorState = action;
+        }
+        
+        errorMessage = '';
+      } else {
+        console.error('Individual motor command failed');
+        errorMessage = `Motor command failed: ${response.status}`;
+      }
+    } catch (error) {
+      console.error('Error sending motor command:', error);
+      errorMessage = `Motor command error: ${error.message}`;
+    }
+  }
   
   // Stop the car
   async function stopCar() {
     await sendCommand('stop');
     isMoving = false;
     currentAction = 'stopped';
+  }
+
+  // Stop individual motor
+  async function stopIndividualMotor(motor) {
+    await controlIndividualMotor(motor, 'stop');
+  }
+
+  // Stop all motors (including individual ones)
+  async function stopAllMotors() {
+    await stopCar();
+    await stopIndividualMotor('right');
+    await stopIndividualMotor('left');
+    rightMotorState = 'stopped';
+    leftMotorState = 'stopped';
   }
   
   // Keyboard controls
@@ -130,7 +187,7 @@
         break;
       case ' ':
         event.preventDefault();
-        stopCar();
+        stopAllMotors();
         break;
     }
   }
@@ -201,7 +258,7 @@
 
     <!-- Controller Section -->
     <section class="controller-section">
-      <h2>Controller</h2>
+      <h2>Main Controller</h2>
       <div class="current-action">
         Current Action: <span class="action-{currentAction}">{currentAction}</span>
       </div>
@@ -230,9 +287,9 @@
           
           <button 
             class="control-btn stop"
-            on:click={stopCar}
+            on:click={stopAllMotors}
           >
-            STOP
+            STOP ALL
           </button>
           
           <button 
@@ -257,6 +314,77 @@
       </div>
     </section>
 
+    <!-- Individual Motor Control Section -->
+    <section class="individual-motor-section">
+      <h2>Individual Motor Control</h2>
+      <div class="motor-controls">
+        
+        <!-- Right Motor Controls -->
+        <div class="motor-group">
+          <h3>Right Motor</h3>
+          <div class="motor-status">
+            Status: <span class="motor-{rightMotorState}">{rightMotorState}</span>
+          </div>
+          <div class="motor-buttons">
+            <button 
+              class="motor-btn forward"
+              on:mousedown={() => controlIndividualMotor('right', 'forward')}
+              on:mouseup={() => stopIndividualMotor('right')}
+              on:mouseleave={() => stopIndividualMotor('right')}
+            >
+              ↑ Forward
+            </button>
+            <button 
+              class="motor-btn stop"
+              on:click={() => stopIndividualMotor('right')}
+            >
+              ⏹ Stop
+            </button>
+            <button 
+              class="motor-btn backward"
+              on:mousedown={() => controlIndividualMotor('right', 'backward')}
+              on:mouseup={() => stopIndividualMotor('right')}
+              on:mouseleave={() => stopIndividualMotor('right')}
+            >
+              ↓ Backward
+            </button>
+          </div>
+        </div>
+
+        <!-- Left Motor Controls -->
+        <div class="motor-group">
+          <h3>Left Motor</h3>
+          <div class="motor-status">
+            Status: <span class="motor-{leftMotorState}">{leftMotorState}</span>
+          </div>
+          <div class="motor-buttons">
+            <button 
+              class="motor-btn forward"
+              on:mousedown={() => controlIndividualMotor('left', 'forward')}
+              on:mouseup={() => stopIndividualMotor('left')}
+              on:mouseleave={() => stopIndividualMotor('left')}
+            >
+              ↑ Forward
+            </button>
+            <button 
+              class="motor-btn stop"
+              on:click={() => stopIndividualMotor('left')}
+            >
+              ⏹ Stop
+            </button>
+            <button 
+              class="motor-btn backward"
+              on:mousedown={() => controlIndividualMotor('left', 'backward')}
+              on:mouseup={() => stopIndividualMotor('left')}
+              on:mouseleave={() => stopIndividualMotor('left')}
+            >
+              ↓ Backward
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Keyboard Controls Info -->
     <section class="keyboard-info">
       <h3>Keyboard Controls</h3>
@@ -265,7 +393,7 @@
         <div>S / ↓ : Backward</div>
         <div>A / ← : Left</div>
         <div>D / → : Right</div>
-        <div>Space : Stop</div>
+        <div>Space : Stop All</div>
       </div>
     </section>
   {/if}
@@ -298,6 +426,12 @@
     color: #f0f0f0;
     border-bottom: 2px solid rgba(255,255,255,0.3);
     padding-bottom: 10px;
+  }
+
+  h3 {
+    color: #f0f0f0;
+    margin-bottom: 10px;
+    text-align: center;
   }
 
   /* Connection Section */
@@ -458,11 +592,89 @@
 
   .stop {
     background: #f44336 !important;
-    font-size: 12px;
+    font-size: 10px;
   }
 
   .stop:hover {
     background: #d32f2f !important;
+  }
+
+  /* Individual Motor Control */
+  .individual-motor-section {
+    background: rgba(255,255,255,0.1);
+    padding: 20px;
+    border-radius: 15px;
+    margin-bottom: 20px;
+    backdrop-filter: blur(10px);
+  }
+
+  .motor-controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  .motor-group {
+    background: rgba(255,255,255,0.1);
+    padding: 15px;
+    border-radius: 10px;
+    border: 2px solid rgba(255,255,255,0.2);
+  }
+
+  .motor-status {
+    text-align: center;
+    margin-bottom: 15px;
+    font-weight: bold;
+  }
+
+  .motor-stopped {
+    color: #f44336;
+  }
+
+  .motor-forward, .motor-backward {
+    color: #4CAF50;
+  }
+
+  .motor-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .motor-btn {
+    padding: 12px 16px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.2s;
+    user-select: none;
+    background: rgba(255,255,255,0.2);
+    color: white;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  }
+
+  .motor-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.4);
+  }
+
+  .motor-btn:active {
+    transform: translateY(0);
+    background: rgba(255,255,255,0.3);
+  }
+
+  .motor-btn.forward {
+    background: rgba(76, 175, 80, 0.8);
+  }
+
+  .motor-btn.backward {
+    background: rgba(255, 152, 0, 0.8);
+  }
+
+  .motor-btn.stop {
+    background: rgba(244, 67, 54, 0.8);
   }
 
   /* Keyboard Info */
@@ -505,6 +717,10 @@
       width: 60px;
       height: 60px;
       font-size: 20px;
+    }
+
+    .motor-controls {
+      grid-template-columns: 1fr;
     }
 
     .keyboard-grid {

@@ -147,52 +147,141 @@ def turn_right(speed=80):
     pwm_ena.ChangeDutyCycle(speed)
     pwm_enb.ChangeDutyCycle(speed)
 
-@app.get("/")
-async def root():
-    return {"message": "RC Car Controller API", "status": "running"}
+def right_motor_forward(speed=80):
+    """Move right motor forward"""
+    GPIO.output(IN1, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
+    pwm_ena.ChangeDutyCycle(speed)
 
-@app.post("/forward")
-async def move_forward(speed: int = 80):
-    """Move car forward"""
+def right_motor_backward(speed=80):
+    """Move right motor backward"""
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
+    pwm_ena.ChangeDutyCycle(speed)
+
+def right_motor_stop():
+    """Stop right motor"""
+    GPIO.output(IN1, GPIO.LOW)
+    GPIO.output(IN2, GPIO.LOW)
+    pwm_ena.ChangeDutyCycle(0)
+
+def left_motor_forward(speed=80):
+    """Move left motor forward"""
+    GPIO.output(IN3, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
+    pwm_enb.ChangeDutyCycle(speed)
+
+def left_motor_backward(speed=80):
+    """Move left motor backward"""
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
+    pwm_enb.ChangeDutyCycle(speed)
+
+def left_motor_stop():
+    """Stop left motor"""
+    GPIO.output(IN3, GPIO.LOW)
+    GPIO.output(IN4, GPIO.LOW)
+    pwm_enb.ChangeDutyCycle(0)
+
+# Individual motor control endpoints
+@app.post("/right-motor/forward")
+async def right_motor_forward_endpoint(speed: int = 80):
+    """Move right motor forward"""
     if not 0 <= speed <= 100:
         return {"error": "Speed must be between 0 and 100"}
-    forward(speed)
-    return {"action": "forward", "speed": speed}
+    right_motor_forward(speed)
+    return {"action": "right_motor_forward", "speed": speed}
 
-@app.post("/backward")
-async def move_backward(speed: int = 80):
-    """Move car backward"""
+@app.post("/right-motor/backward")
+async def right_motor_backward_endpoint(speed: int = 80):
+    """Move right motor backward"""
     if not 0 <= speed <= 100:
         return {"error": "Speed must be between 0 and 100"}
-    backward(speed)
-    return {"action": "backward", "speed": speed}
+    right_motor_backward(speed)
+    return {"action": "right_motor_backward", "speed": speed}
 
-@app.post("/left")
-async def turn_car_left(speed: int = 80):
-    """Turn car left"""
+@app.post("/right-motor/stop")
+async def right_motor_stop_endpoint():
+    """Stop right motor"""
+    right_motor_stop()
+    return {"action": "right_motor_stop"}
+
+@app.post("/left-motor/forward")
+async def left_motor_forward_endpoint(speed: int = 80):
+    """Move left motor forward"""
     if not 0 <= speed <= 100:
         return {"error": "Speed must be between 0 and 100"}
-    turn_left(speed)
-    return {"action": "left", "speed": speed}
+    left_motor_forward(speed)
+    return {"action": "left_motor_forward", "speed": speed}
 
-@app.post("/right")
-async def turn_car_right(speed: int = 80):
-    """Turn car right"""
+@app.post("/left-motor/backward")
+async def left_motor_backward_endpoint(speed: int = 80):
+    """Move left motor backward"""
     if not 0 <= speed <= 100:
         return {"error": "Speed must be between 0 and 100"}
-    turn_right(speed)
-    return {"action": "right", "speed": speed}
+    left_motor_backward(speed)
+    return {"action": "left_motor_backward", "speed": speed}
 
-@app.post("/stop")
-async def stop_car():
-    """Stop the car"""
-    stop_motors()
-    return {"action": "stop"}
+@app.post("/left-motor/stop")
+async def left_motor_stop_endpoint():
+    """Stop left motor"""
+    left_motor_stop()
+    return {"action": "left_motor_stop"}
+
+# Test individual pins endpoint
+@app.post("/test/pin/{pin_name}")
+async def test_pin(pin_name: str, state: str = "high"):
+    """Test individual GPIO pin - for debugging"""
+    pin_map = {
+        "in1": IN1,
+        "in2": IN2,
+        "in3": IN3,
+        "in4": IN4
+    }
+    
+    if pin_name.lower() not in pin_map:
+        return {"error": f"Invalid pin name. Available: {list(pin_map.keys())}"}
+    
+    if state.lower() not in ["high", "low"]:
+        return {"error": "State must be 'high' or 'low'"}
+    
+    pin = pin_map[pin_name.lower()]
+    gpio_state = GPIO.HIGH if state.lower() == "high" else GPIO.LOW
+    GPIO.output(pin, gpio_state)
+    
+    return {"action": f"set_pin_{pin_name}", "pin": pin, "state": state}
+
+@app.post("/test/pwm/{motor}")
+async def test_pwm(motor: str, duty_cycle: int = 50):
+    """Test PWM for individual motor - for debugging"""
+    if not 0 <= duty_cycle <= 100:
+        return {"error": "Duty cycle must be between 0 and 100"}
+    
+    if motor.lower() == "right":
+        pwm_ena.ChangeDutyCycle(duty_cycle)
+        return {"action": "test_right_pwm", "duty_cycle": duty_cycle}
+    elif motor.lower() == "left":
+        pwm_enb.ChangeDutyCycle(duty_cycle)
+        return {"action": "test_left_pwm", "duty_cycle": duty_cycle}
+    else:
+        return {"error": "Motor must be 'right' or 'left'"}
 
 @app.get("/status")
 async def get_status():
     """Get car status"""
-    return {"status": "ready", "available_commands": ["forward", "backward", "left", "right", "stop"]}
+    return {
+        "status": "ready", 
+        "available_commands": [
+            "forward", "backward", "left", "right", "stop",
+            "right-motor/forward", "right-motor/backward", "right-motor/stop",
+            "left-motor/forward", "left-motor/backward", "left-motor/stop",
+            "test/pin/{pin_name}", "test/pwm/{motor}"
+        ],
+        "pin_mapping": {
+            "ENA": ENA, "ENB": ENB,
+            "IN1": IN1, "IN2": IN2, "IN3": IN3, "IN4": IN4
+        }
+    }
 
 if __name__ == "__main__":
     import uvicorn
