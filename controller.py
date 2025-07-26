@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import RPi.GPIO as GPIO
 import time
 from contextlib import asynccontextmanager
@@ -35,6 +36,15 @@ async def lifespan(app: FastAPI):
     cleanup_gpio()
 
 app = FastAPI(title="RC Car Controller", lifespan=lifespan)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 def stop_motors():
     """Stop all motors"""

@@ -7,25 +7,57 @@
   let currentSpeed = 80;
   let isMoving = false;
   let currentAction = 'stopped';
+  let errorMessage = '';
   
   // Connection status check
   async function checkConnection() {
-    if (!serverUrl) return;
+    if (!serverUrl) {
+      errorMessage = 'Please enter a server URL';
+      return;
+    }
+    
+    // Add http:// if not present
+    if (!serverUrl.startsWith('http://') && !serverUrl.startsWith('https://')) {
+      serverUrl = 'http://' + serverUrl;
+    }
+    
+    status = 'connecting...';
+    errorMessage = '';
     
     try {
-      const response = await fetch(`${serverUrl}/status`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+      
+      const response = await fetch(`${serverUrl}/status`, {
+        signal: controller.signal,
+        mode: 'cors'
+      });
+      
+      clearTimeout(timeoutId);
+      
       if (response.ok) {
         connected = true;
         status = 'connected';
         const data = await response.json();
         console.log('Connected to car:', data);
+        errorMessage = '';
       } else {
         connected = false;
         status = 'connection failed';
+        errorMessage = `Server responded with status: ${response.status}`;
       }
     } catch (error) {
       connected = false;
       status = 'connection error';
+      
+      if (error.name === 'AbortError') {
+        errorMessage = 'Connection timeout - check if server is running and IP is correct';
+      } else if (error.message.includes('Failed to fetch')) {
+        errorMessage = 'Cannot reach server - check IP address and network connection';
+      } else {
+        errorMessage = `Connection error: ${error.message}`;
+      }
+      
       console.error('Connection error:', error);
     }
   }
@@ -45,16 +77,22 @@
         ? `${serverUrl}/${action}` 
         : `${serverUrl}/${action}?speed=${speed}`;
       
-      const response = await fetch(url, { method: 'POST' });
+      const response = await fetch(url, { 
+        method: 'POST',
+        mode: 'cors'
+      });
       
       if (response.ok) {
         const data = await response.json();
         console.log('Command sent:', data);
+        errorMessage = '';
       } else {
         console.error('Command failed');
+        errorMessage = `Command failed: ${response.status}`;
       }
     } catch (error) {
       console.error('Error sending command:', error);
+      errorMessage = `Command error: ${error.message}`;
     }
   }
   
@@ -129,7 +167,7 @@
     <div class="connection-form">
       <input 
         bind:value={serverUrl} 
-        placeholder="Enter car IP (e.g., http://192.168.1.100:8000)"
+        placeholder="Enter car IP (e.g., 192.168.1.100:8000)"
         class="url-input"
       />
       <button on:click={checkConnection} class="connect-btn">
@@ -137,8 +175,11 @@
       </button>
     </div>
     <div class="status">
-      Status: <span class="status-{status}">{status}</span>
+      Status: <span class="status-{status.replace(' ', '-')}">{status}</span>
     </div>
+    {#if errorMessage}
+      <div class="error-message">{errorMessage}</div>
+    {/if}
   </section>
 
   {#if connected}
@@ -310,8 +351,22 @@
     color: #f44336;
   }
 
-  .status-connection {
+  .status-connecting {
     color: #ff9800;
+  }
+
+  .status-connection-failed, .status-connection-error {
+    color: #f44336;
+  }
+
+  .error-message {
+    background: rgba(244, 67, 54, 0.2);
+    border: 1px solid #f44336;
+    color: #ffcdd2;
+    padding: 10px;
+    border-radius: 8px;
+    margin-top: 10px;
+    font-size: 14px;
   }
 
   /* Speed Section */
