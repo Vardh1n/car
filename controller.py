@@ -56,10 +56,10 @@ def forward(speed=80):
     """Move car forward"""
     # Right motors forward
     GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
     # Left motors forward
     GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
     # Set speed
     pwm_ena.ChangeDutyCycle(speed)
     pwm_enb.ChangeDutyCycle(speed)
@@ -68,10 +68,10 @@ def backward(speed=80):
     """Move car backward"""
     # Right motors backward
     GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
     # Left motors backward
     GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
     # Set speed
     pwm_ena.ChangeDutyCycle(speed)
     pwm_enb.ChangeDutyCycle(speed)
@@ -80,10 +80,10 @@ def turn_left(speed=80):
     """Turn car left (right motors forward, left motors backward)"""
     # Right motors forward
     GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
+    GPIO.output(IN2, GPIO.HIGH)
     # Left motors backward
     GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.HIGH)
+    GPIO.output(IN4, GPIO.LOW)
     # Set speed
     pwm_ena.ChangeDutyCycle(speed)
     pwm_enb.ChangeDutyCycle(speed)
@@ -92,10 +92,10 @@ def turn_right(speed=80):
     """Turn car right (left motors forward, right motors backward)"""
     # Right motors backward
     GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
+    GPIO.output(IN2, GPIO.LOW)
     # Left motors forward
     GPIO.output(IN3, GPIO.HIGH)
-    GPIO.output(IN4, GPIO.LOW)
+    GPIO.output(IN4, GPIO.HIGH)
     # Set speed
     pwm_ena.ChangeDutyCycle(speed)
     pwm_enb.ChangeDutyCycle(speed)
