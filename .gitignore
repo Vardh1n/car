@@ -1,0 +1,5 @@
+venv/
+venv
+build/
+build
+node_modules
