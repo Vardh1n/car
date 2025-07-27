@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Dict, Optional
 import RPi.GPIO as GPIO
 import logging
+import cv2
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -425,6 +426,26 @@ async def get_motor_status():
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.websocket("/ws/camera")
+async def webcam_stream(websocket: WebSocket):
+    """WebSocket endpoint to stream webcam footage as JPEG frames."""
+    await websocket.accept()
+    cap = cv2.VideoCapture(0)  # 0 is the default camera
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                await websocket.send_text("Camera error")
+                break
+            # Encode frame as JPEG
+            _, jpeg = cv2.imencode('.jpg', frame)
+            await websocket.send_bytes(jpeg.tobytes())
+    except WebSocketDisconnect:
+        pass
+    finally:
+        cap.release()
+        await websocket.close()
 
 if __name__ == "__main__":
     import uvicorn
