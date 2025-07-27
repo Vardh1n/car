@@ -78,8 +78,8 @@
       currentAction = action;
       
       const url = action === 'stop' 
-        ? `${serverUrl}/${action}` 
-        : `${serverUrl}/${action}?speed=${speed}`;
+        ? `${serverUrl}/car/stop` 
+        : `${serverUrl}/car/${action}?speed=${speed}`;
       
       const response = await fetch(url, { 
         method: 'POST',
@@ -101,20 +101,25 @@
   }
 
   // Individual motor control
-  async function controlIndividualMotor(motor, action, speed = currentSpeed) {
+  async function controlIndividualMotor(motor, direction, speed = currentSpeed) {
     if (!connected) {
       alert('Please connect to the car first!');
       return;
     }
     
     try {
-      const url = action === 'stop' 
-        ? `${serverUrl}/${motor}-motor/stop` 
-        : `${serverUrl}/${motor}-motor/${action}?speed=${speed}`;
+      const url = `${serverUrl}/motor/${motor}`;
       
       const response = await fetch(url, { 
         method: 'POST',
-        mode: 'cors'
+        mode: 'cors',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          speed: direction === 'stop' ? 0 : speed,
+          direction: direction
+        })
       });
       
       if (response.ok) {
@@ -123,9 +128,9 @@
         
         // Update motor state
         if (motor === 'right') {
-          rightMotorState = action;
+          rightMotorState = direction;
         } else if (motor === 'left') {
-          leftMotorState = action;
+          leftMotorState = direction;
         }
         
         errorMessage = '';
@@ -628,6 +633,10 @@
   }
 
   .motor-stopped {
+    color: #f44336;
+  }
+
+  .motor-stop {
     color: #f44336;
   }
 

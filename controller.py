@@ -4,6 +4,7 @@ import RPi.GPIO as GPIO
 import time
 from contextlib import asynccontextmanager
 import platform
+from pydantic import BaseModel
 
 # GPIO pin definitions
 ENA = 18  # Right motors enable
@@ -16,332 +17,169 @@ IN4 = 22  # Left motor 2
 # Add this after imports
 RUNNING_ON_PI = platform.machine().startswith('arm') or platform.machine().startswith('aarch64')
 
-if not RUNNING_ON_PI:
-    print("Warning: Not running on Raspberry Pi. GPIO operations will be simulated.")
-    # Mock GPIO for development
-    class MockGPIO:
-        BCM = "BCM"
-        OUT = "OUT"
-        HIGH = 1
-        LOW = 0
-        
-        @staticmethod
-        def setmode(mode): pass
-        @staticmethod
-        def setup(pins, mode): pass
-        @staticmethod
-        def output(pins, state): 
-            print(f"GPIO output: {pins} -> {state}")
-        @staticmethod
-        def cleanup(): pass
-        @staticmethod
-        def PWM(pin, freq): 
-            return MockPWM()
-    
-    class MockPWM:
-        def start(self, duty): pass
-        def ChangeDutyCycle(self, duty): 
-            print(f"PWM duty cycle: {duty}")
-        def stop(self): pass
-    
-    GPIO = MockGPIO()
+# Pydantic models for request bodies
+class MotorControl(BaseModel):
+    speed: int = 50  # 0-100
+    direction: str = "forward"  # forward, backward, stop
 
-# Setup GPIO
-def setup_gpio():
-    try:
+class PinControl(BaseModel):
+    state: bool
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    if RUNNING_ON_PI:
         GPIO.setmode(GPIO.BCM)
         GPIO.setup([ENA, ENB, IN1, IN2, IN3, IN4], GPIO.OUT)
         
-        # Setup PWM for motor speed control
+        # Initialize PWM for speed control
         global pwm_ena, pwm_enb
         pwm_ena = GPIO.PWM(ENA, 1000)  # 1000Hz frequency
         pwm_enb = GPIO.PWM(ENB, 1000)
         pwm_ena.start(0)
         pwm_enb.start(0)
-        print("GPIO setup completed successfully")
-    except Exception as e:
-        print(f"GPIO setup failed: {e}")
-        raise
-
-def cleanup_gpio():
-    try:
-        if 'pwm_ena' in globals():
-            pwm_ena.stop()
-        if 'pwm_enb' in globals():
-            pwm_enb.stop()
-        GPIO.cleanup()
-        print("GPIO cleanup completed")
-    except Exception as e:
-        print(f"GPIO cleanup failed: {e}")
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    setup_gpio()
+    
     yield
+    
     # Shutdown
-    cleanup_gpio()
+    if RUNNING_ON_PI:
+        GPIO.cleanup()
 
-app = FastAPI(title="RC Car Controller", lifespan=lifespan)
+app = FastAPI(lifespan=lifespan)
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-def stop_motors():
-    """Stop all motors"""
-    GPIO.output([IN1, IN2, IN3, IN4], GPIO.LOW)
-    pwm_ena.ChangeDutyCycle(0)
-    pwm_enb.ChangeDutyCycle(0)
-    print("All motors stopped")
+# Motor control functions
+def set_motor_speed(pin, speed):
+    if RUNNING_ON_PI:
+        if pin == ENA:
+            pwm_ena.ChangeDutyCycle(speed)
+        elif pin == ENB:
+            pwm_enb.ChangeDutyCycle(speed)
 
-def forward(speed=80):
-    """Move car forward"""
-    print(f"Moving forward at speed {speed}")
-    # Right motors forward
-    GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
-    # Left motors forward - try both configurations
-    GPIO.output(IN3, GPIO.LOW)   
-    GPIO.output(IN4, GPIO.HIGH)  
-    # Set speed
-    pwm_ena.ChangeDutyCycle(speed)
-    pwm_enb.ChangeDutyCycle(speed)
-    print(f"Right motor: IN1=HIGH, IN2=LOW, PWM={speed}")
-    print(f"Left motor: IN3=LOW, IN4=HIGH, PWM={speed}")
-
-def backward(speed=80):
-    """Move car backward"""
-    print(f"Moving backward at speed {speed}")
-    # Right motors backward
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
-    # Left motors backward
-    GPIO.output(IN3, GPIO.HIGH)  
-    GPIO.output(IN4, GPIO.LOW)   
-    # Set speed
-    pwm_ena.ChangeDutyCycle(speed)
-    pwm_enb.ChangeDutyCycle(speed)
-    print(f"Right motor: IN1=LOW, IN2=HIGH, PWM={speed}")
-    print(f"Left motor: IN3=HIGH, IN4=LOW, PWM={speed}")
-
-def turn_left(speed=80):
-    """Turn car left (right motors forward, left motors backward)"""
-    print(f"Turning left at speed {speed}")
-    # Right motors forward
-    GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
-    # Left motors backward
-    GPIO.output(IN3, GPIO.HIGH)  
-    GPIO.output(IN4, GPIO.LOW)   
-    # Set speed
-    pwm_ena.ChangeDutyCycle(speed)
-    pwm_enb.ChangeDutyCycle(speed)
-    print(f"Right motor: IN1=HIGH, IN2=LOW, PWM={speed}")
-    print(f"Left motor: IN3=HIGH, IN4=LOW, PWM={speed}")
-
-def turn_right(speed=80):
-    """Turn car right (left motors forward, right motors backward)"""
-    print(f"Turning right at speed {speed}")
-    # Right motors backward
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
-    # Left motors forward
-    GPIO.output(IN3, GPIO.LOW)   
-    GPIO.output(IN4, GPIO.HIGH)  
-    # Set speed
-    pwm_ena.ChangeDutyCycle(speed)
-    pwm_enb.ChangeDutyCycle(speed)
-    print(f"Right motor: IN1=LOW, IN2=HIGH, PWM={speed}")
-    print(f"Left motor: IN3=LOW, IN4=HIGH, PWM={speed}")
-
-def right_motor_forward(speed=80):
-    """Move right motor forward"""
-    print(f"Right motor forward at speed {speed}")
-    GPIO.output(IN1, GPIO.HIGH)
-    GPIO.output(IN2, GPIO.LOW)
-    pwm_ena.ChangeDutyCycle(speed)
-    print(f"Right motor: IN1=HIGH, IN2=LOW, PWM={speed}")
-
-def right_motor_backward(speed=80):
-    """Move right motor backward"""
-    print(f"Right motor backward at speed {speed}")
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.HIGH)
-    pwm_ena.ChangeDutyCycle(speed)
-    print(f"Right motor: IN1=LOW, IN2=HIGH, PWM={speed}")
-
-def right_motor_stop():
-    """Stop right motor"""
-    print("Right motor stopped")
-    GPIO.output(IN1, GPIO.LOW)
-    GPIO.output(IN2, GPIO.LOW)
-    pwm_ena.ChangeDutyCycle(0)
-
-def left_motor_forward(speed=80):
-    """Move left motor forward"""
-    print(f"Left motor forward at speed {speed}")
-    GPIO.output(IN3, GPIO.LOW)   
-    GPIO.output(IN4, GPIO.HIGH)  
-    pwm_enb.ChangeDutyCycle(speed)
-    print(f"Left motor: IN3=LOW, IN4=HIGH, PWM={speed}")
-
-def left_motor_backward(speed=80):
-    """Move left motor backward"""
-    print(f"Left motor backward at speed {speed}")
-    GPIO.output(IN3, GPIO.HIGH)  
-    GPIO.output(IN4, GPIO.LOW)   
-    pwm_enb.ChangeDutyCycle(speed)
-    print(f"Left motor: IN3=HIGH, IN4=LOW, PWM={speed}")
-
-def left_motor_stop():
-    """Stop left motor"""
-    print("Left motor stopped")
-    GPIO.output(IN3, GPIO.LOW)
-    GPIO.output(IN4, GPIO.LOW)
-    pwm_enb.ChangeDutyCycle(0)
+def set_motor_direction(in1, in2, direction):
+    if not RUNNING_ON_PI:
+        return
+    
+    if direction == "forward":
+        GPIO.output(in1, GPIO.HIGH)
+        GPIO.output(in2, GPIO.LOW)
+    elif direction == "backward":
+        GPIO.output(in1, GPIO.LOW)
+        GPIO.output(in2, GPIO.HIGH)
+    else:  # stop
+        GPIO.output(in1, GPIO.LOW)
+        GPIO.output(in2, GPIO.LOW)
 
 # Individual motor control endpoints
-@app.post("/right-motor/forward")
-async def right_motor_forward_endpoint(speed: int = 80):
-    """Move right motor forward"""
-    if not 0 <= speed <= 100:
-        return {"error": "Speed must be between 0 and 100"}
-    right_motor_forward(speed)
-    return {"action": "right_motor_forward", "speed": speed}
+@app.post("/motor/right")
+async def control_right_motor(motor: MotorControl):
+    """Control right motor (ENA, IN1, IN2)"""
+    set_motor_direction(IN1, IN2, motor.direction)
+    speed = motor.speed if motor.direction != "stop" else 0
+    set_motor_speed(ENA, speed)
+    return {"status": "success", "motor": "right", "speed": speed, "direction": motor.direction}
 
-@app.post("/right-motor/backward")
-async def right_motor_backward_endpoint(speed: int = 80):
-    """Move right motor backward"""
-    if not 0 <= speed <= 100:
-        return {"error": "Speed must be between 0 and 100"}
-    right_motor_backward(speed)
-    return {"action": "right_motor_backward", "speed": speed}
+@app.post("/motor/left")
+async def control_left_motor(motor: MotorControl):
+    """Control left motor (ENB, IN3, IN4)"""
+    set_motor_direction(IN3, IN4, motor.direction)
+    speed = motor.speed if motor.direction != "stop" else 0
+    set_motor_speed(ENB, speed)
+    return {"status": "success", "motor": "left", "speed": speed, "direction": motor.direction}
 
-@app.post("/right-motor/stop")
-async def right_motor_stop_endpoint():
-    """Stop right motor"""
-    right_motor_stop()
-    return {"action": "right_motor_stop"}
-
-@app.post("/left-motor/forward")
-async def left_motor_forward_endpoint(speed: int = 80):
-    """Move left motor forward"""
-    if not 0 <= speed <= 100:
-        return {"error": "Speed must be between 0 and 100"}
-    left_motor_forward(speed)
-    return {"action": "left_motor_forward", "speed": speed}
-
-@app.post("/left-motor/backward")
-async def left_motor_backward_endpoint(speed: int = 80):
-    """Move left motor backward"""
-    if not 0 <= speed <= 100:
-        return {"error": "Speed must be between 0 and 100"}
-    left_motor_backward(speed)
-    return {"action": "left_motor_backward", "speed": speed}
-
-@app.post("/left-motor/stop")
-async def left_motor_stop_endpoint():
-    """Stop left motor"""
-    left_motor_stop()
-    return {"action": "left_motor_stop"}
-
-# Basic movement control endpoints (add these after the individual motor functions)
-@app.post("/forward")
-async def move_forward(speed: int = 80):
+# Car movement endpoints
+@app.post("/car/forward")
+async def move_forward(speed: int = 50):
     """Move car forward"""
-    if not 0 <= speed <= 100:
-        return {"error": "Speed must be between 0 and 100"}
-    forward(speed)
-    return {"action": "forward", "speed": speed}
+    set_motor_direction(IN1, IN2, "forward")
+    set_motor_direction(IN3, IN4, "forward")
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    return {"status": "success", "action": "forward", "speed": speed}
 
-@app.post("/backward")
-async def move_backward(speed: int = 80):
+@app.post("/car/backward")
+async def move_backward(speed: int = 50):
     """Move car backward"""
-    if not 0 <= speed <= 100:
-        return {"error": "Speed must be between 0 and 100"}
-    backward(speed)
-    return {"action": "backward", "speed": speed}
+    set_motor_direction(IN1, IN2, "backward")
+    set_motor_direction(IN3, IN4, "backward")
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    return {"status": "success", "action": "backward", "speed": speed}
 
-@app.post("/left")
-async def turn_left_endpoint(speed: int = 80):
+@app.post("/car/left")
+async def turn_left(speed: int = 50):
     """Turn car left"""
-    if not 0 <= speed <= 100:
-        return {"error": "Speed must be between 0 and 100"}
-    turn_left(speed)
-    return {"action": "left", "speed": speed}
+    set_motor_direction(IN1, IN2, "forward")  # Right motor forward
+    set_motor_direction(IN3, IN4, "backward")  # Left motor backward
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    return {"status": "success", "action": "left", "speed": speed}
 
-@app.post("/right")
-async def turn_right_endpoint(speed: int = 80):
+@app.post("/car/right")
+async def turn_right(speed: int = 50):
     """Turn car right"""
-    if not 0 <= speed <= 100:
-        return {"error": "Speed must be between 0 and 100"}
-    turn_right(speed)
-    return {"action": "right", "speed": speed}
+    set_motor_direction(IN1, IN2, "backward")  # Right motor backward
+    set_motor_direction(IN3, IN4, "forward")  # Left motor forward
+    set_motor_speed(ENA, speed)
+    set_motor_speed(ENB, speed)
+    return {"status": "success", "action": "right", "speed": speed}
 
-@app.post("/stop")
+@app.post("/car/stop")
 async def stop_car():
     """Stop all motors"""
-    stop_motors()
-    return {"action": "stop"}
+    set_motor_direction(IN1, IN2, "stop")
+    set_motor_direction(IN3, IN4, "stop")
+    set_motor_speed(ENA, 0)
+    set_motor_speed(ENB, 0)
+    return {"status": "success", "action": "stop"}
 
-# Test individual pins endpoint
-@app.post("/test/pin/{pin_name}")
-async def test_pin(pin_name: str, state: str = "high"):
-    """Test individual GPIO pin - for debugging"""
-    pin_map = {
-        "in1": IN1,
-        "in2": IN2,
-        "in3": IN3,
-        "in4": IN4
-    }
-    
-    if pin_name.lower() not in pin_map:
-        return {"error": f"Invalid pin name. Available: {list(pin_map.keys())}"}
-    
-    if state.lower() not in ["high", "low"]:
-        return {"error": "State must be 'high' or 'low'"}
-    
-    pin = pin_map[pin_name.lower()]
-    gpio_state = GPIO.HIGH if state.lower() == "high" else GPIO.LOW
-    GPIO.output(pin, gpio_state)
-    
-    return {"action": f"set_pin_{pin_name}", "pin": pin, "state": state}
+# Individual pin control endpoints
+@app.post("/pin/{pin_number}")
+async def control_pin(pin_number: int, control: PinControl):
+    """Control individual GPIO pin"""
+    if RUNNING_ON_PI:
+        try:
+            GPIO.setup(pin_number, GPIO.OUT)
+            GPIO.output(pin_number, GPIO.HIGH if control.state else GPIO.LOW)
+            return {"status": "success", "pin": pin_number, "state": control.state}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    return {"status": "success", "pin": pin_number, "state": control.state, "note": "Not running on Pi"}
 
-@app.post("/test/pwm/{motor}")
-async def test_pwm(motor: str, duty_cycle: int = 50):
-    """Test PWM for individual motor - for debugging"""
-    if not 0 <= duty_cycle <= 100:
-        return {"error": "Duty cycle must be between 0 and 100"}
-    
-    if motor.lower() == "right":
-        pwm_ena.ChangeDutyCycle(duty_cycle)
-        return {"action": "test_right_pwm", "duty_cycle": duty_cycle}
-    elif motor.lower() == "left":
-        pwm_enb.ChangeDutyCycle(duty_cycle)
-        return {"action": "test_left_pwm", "duty_cycle": duty_cycle}
-    else:
-        return {"error": "Motor must be 'right' or 'left'"}
+# Get pin status
+@app.get("/pin/{pin_number}")
+async def get_pin_status(pin_number: int):
+    """Get GPIO pin status"""
+    if RUNNING_ON_PI:
+        try:
+            GPIO.setup(pin_number, GPIO.IN)
+            state = GPIO.input(pin_number)
+            return {"pin": pin_number, "state": bool(state)}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    return {"pin": pin_number, "state": False, "note": "Not running on Pi"}
 
+# Status endpoint
 @app.get("/status")
 async def get_status():
-    """Get car status"""
+    """Get system status"""
     return {
-        "status": "ready", 
-        "available_commands": [
-            "forward", "backward", "left", "right", "stop",
-            "right-motor/forward", "right-motor/backward", "right-motor/stop",
-            "left-motor/forward", "left-motor/backward", "left-motor/stop",
-            "test/pin/{pin_name}", "test/pwm/{motor}"
-        ],
-        "pin_mapping": {
-            "ENA": ENA, "ENB": ENB,
-            "IN1": IN1, "IN2": IN2, "IN3": IN3, "IN4": IN4
+        "running_on_pi": RUNNING_ON_PI,
+        "platform": platform.machine(),
+        "gpio_pins": {
+            "ENA": ENA,
+            "ENB": ENB,
+            "IN1": IN1,
+            "IN2": IN2,
+            "IN3": IN3,
+            "IN4": IN4
         }
     }
 
