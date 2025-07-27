@@ -54,6 +54,13 @@ class PWMUpdate(BaseModel):
     pin: int = Field(..., description="GPIO pin number")
     duty_cycle: float = Field(..., ge=0, le=100, description="PWM duty cycle (0-100%)")
 
+class TankDriveCommand(BaseModel):
+    left_speed: float = Field(..., ge=-100, le=100, description="Left motor speed (-100 to 100)")
+    right_speed: float = Field(..., ge=-100, le=100, description="Right motor speed (-100 to 100)")
+
+class DirectionalCommand(BaseModel):
+    speed: float = Field(50, ge=0, le=100, description="Motor speed (0-100%)")
+
 # Initialize GPIO
 @app.on_event("startup")
 async def startup_event():
@@ -273,6 +280,151 @@ async def control_predefined_pin_pwm(pin_name: str, duty_cycle: float):
         await update_pwm_duty_cycle(PWMUpdate(pin=pin, duty_cycle=duty_cycle))
     
     return {"message": f"PWM updated on {pin_name} (pin {pin})", "duty_cycle": duty_cycle}
+
+# High/Low control endpoints
+@app.post("/digital/high/{pin}")
+async def set_pin_high(pin: int):
+    """Set a pin to HIGH state"""
+    return await digital_write(DigitalWrite(pin=pin, state=True))
+
+@app.post("/digital/low/{pin}")
+async def set_pin_low(pin: int):
+    """Set a pin to LOW state"""
+    return await digital_write(DigitalWrite(pin=pin, state=False))
+
+@app.post("/pins/predefined/{pin_name}/high")
+async def set_predefined_pin_high(pin_name: str):
+    """Set predefined pin to HIGH"""
+    if pin_name not in AVAILABLE_PINS:
+        raise HTTPException(status_code=404, detail="Predefined pin not found")
+    
+    pin = AVAILABLE_PINS[pin_name]
+    return await digital_write(DigitalWrite(pin=pin, state=True))
+
+@app.post("/pins/predefined/{pin_name}/low")
+async def set_predefined_pin_low(pin_name: str):
+    """Set predefined pin to LOW"""
+    if pin_name not in AVAILABLE_PINS:
+        raise HTTPException(status_code=404, detail="Predefined pin not found")
+    
+    pin = AVAILABLE_PINS[pin_name]
+    return await digital_write(DigitalWrite(pin=pin, state=False))
+
+# Tank drive control endpoints
+@app.post("/motor/tank")
+async def tank_drive(command: TankDriveCommand):
+    """Control both motors independently (tank drive)"""
+    try:
+        # Configure motor pins if not already configured
+        motor_pins = ["ENA", "ENB", "IN1", "IN2", "IN3", "IN4"]
+        for pin_name in motor_pins:
+            pin = AVAILABLE_PINS[pin_name]
+            if pin not in pin_states:
+                GPIO.setup(pin, GPIO.OUT)
+                pin_states[pin] = {"mode": "output", "state": False}
+        
+        # Left motor control
+        left_speed = abs(command.left_speed)
+        if command.left_speed > 0:
+            # Forward
+            GPIO.output(AVAILABLE_PINS["IN1"], GPIO.HIGH)
+            GPIO.output(AVAILABLE_PINS["IN2"], GPIO.LOW)
+        elif command.left_speed < 0:
+            # Backward
+            GPIO.output(AVAILABLE_PINS["IN1"], GPIO.LOW)
+            GPIO.output(AVAILABLE_PINS["IN2"], GPIO.HIGH)
+        else:
+            # Stop
+            GPIO.output(AVAILABLE_PINS["IN1"], GPIO.LOW)
+            GPIO.output(AVAILABLE_PINS["IN2"], GPIO.LOW)
+        
+        # Right motor control
+        right_speed = abs(command.right_speed)
+        if command.right_speed > 0:
+            # Forward
+            GPIO.output(AVAILABLE_PINS["IN3"], GPIO.HIGH)
+            GPIO.output(AVAILABLE_PINS["IN4"], GPIO.LOW)
+        elif command.right_speed < 0:
+            # Backward
+            GPIO.output(AVAILABLE_PINS["IN3"], GPIO.LOW)
+            GPIO.output(AVAILABLE_PINS["IN4"], GPIO.HIGH)
+        else:
+            # Stop
+            GPIO.output(AVAILABLE_PINS["IN3"], GPIO.LOW)
+            GPIO.output(AVAILABLE_PINS["IN4"], GPIO.LOW)
+        
+        # Set PWM speeds
+        for pin_name, speed in [("ENA", left_speed), ("ENB", right_speed)]:
+            pin = AVAILABLE_PINS[pin_name]
+            if pin in pwm_instances:
+                pwm_instances[pin].ChangeDutyCycle(speed)
+            else:
+                pwm = GPIO.PWM(pin, 1000)  # 1kHz frequency
+                pwm.start(speed)
+                pwm_instances[pin] = pwm
+                pin_states[pin]["pwm"] = {"frequency": 1000, "duty_cycle": speed}
+        
+        logger.info(f"Tank drive: Left={command.left_speed}%, Right={command.right_speed}%")
+        return {"message": "Tank drive command executed", "left_speed": command.left_speed, "right_speed": command.right_speed}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/motor/forward")
+async def move_forward(command: DirectionalCommand = DirectionalCommand()):
+    """Move forward at specified speed"""
+    return await tank_drive(TankDriveCommand(left_speed=command.speed, right_speed=command.speed))
+
+@app.post("/motor/backward")
+async def move_backward(command: DirectionalCommand = DirectionalCommand()):
+    """Move backward at specified speed"""
+    return await tank_drive(TankDriveCommand(left_speed=-command.speed, right_speed=-command.speed))
+
+@app.post("/motor/left")
+async def turn_left(command: DirectionalCommand = DirectionalCommand()):
+    """Turn left by stopping left motor and running right motor"""
+    return await tank_drive(TankDriveCommand(left_speed=0, right_speed=command.speed))
+
+@app.post("/motor/right")
+async def turn_right(command: DirectionalCommand = DirectionalCommand()):
+    """Turn right by stopping right motor and running left motor"""
+    return await tank_drive(TankDriveCommand(left_speed=command.speed, right_speed=0))
+
+@app.post("/motor/spin-left")
+async def spin_left(command: DirectionalCommand = DirectionalCommand()):
+    """Spin left by running motors in opposite directions"""
+    return await tank_drive(TankDriveCommand(left_speed=-command.speed, right_speed=command.speed))
+
+@app.post("/motor/spin-right")
+async def spin_right(command: DirectionalCommand = DirectionalCommand()):
+    """Spin right by running motors in opposite directions"""
+    return await tank_drive(TankDriveCommand(left_speed=command.speed, right_speed=-command.speed))
+
+@app.post("/motor/stop")
+async def stop_motors():
+    """Stop all motors"""
+    return await tank_drive(TankDriveCommand(left_speed=0, right_speed=0))
+
+@app.get("/motor/status")
+async def get_motor_status():
+    """Get current motor status"""
+    try:
+        status = {}
+        for motor in ["ENA", "ENB", "IN1", "IN2", "IN3", "IN4"]:
+            pin = AVAILABLE_PINS[motor]
+            if pin in pin_states:
+                status[motor] = {
+                    "pin": pin,
+                    "state": pin_states[pin].get("state", False),
+                    "current_value": GPIO.input(pin)
+                }
+                if pin in pwm_instances:
+                    status[motor]["pwm"] = pin_states[pin].get("pwm", {})
+        
+        return {"motor_status": status}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
