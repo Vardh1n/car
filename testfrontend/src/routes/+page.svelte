@@ -1,739 +1,668 @@
 <script>
-  import { onMount } from 'svelte';
-  
-  let serverUrl = '';
-  let connected = false;
-  let status = 'disconnected';
-  let currentSpeed = 80;
-  let isMoving = false;
-  let currentAction = 'stopped';
-  let errorMessage = '';
-  
-  // Individual motor states
-  let rightMotorState = 'stopped';
-  let leftMotorState = 'stopped';
-  
-  // Connection status check
-  async function checkConnection() {
-    if (!serverUrl) {
-      errorMessage = 'Please enter a server URL';
-      return;
-    }
+    import { onMount } from 'svelte';
     
-    // Add http:// if not present
-    if (!serverUrl.startsWith('http://') && !serverUrl.startsWith('https://')) {
-      serverUrl = 'http://' + serverUrl;
-    }
+    // API Configuration
+    let apiUrl = 'http://192.168.196.140:8000'; // Default IP, make this configurable
+    let connectionStatus = 'disconnected';
     
-    status = 'connecting...';
-    errorMessage = '';
+    // Pin data
+    let pins = {};
+    let availablePins = {};
+    let predefinedPins = {};
     
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
-      
-      const response = await fetch(`${serverUrl}/status`, {
-        signal: controller.signal,
-        mode: 'cors'
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (response.ok) {
-        connected = true;
-        status = 'connected';
-        const data = await response.json();
-        console.log('Connected to car:', data);
-        errorMessage = '';
-      } else {
-        connected = false;
-        status = 'connection failed';
-        errorMessage = `Server responded with status: ${response.status}`;
-      }
-    } catch (error) {
-      connected = false;
-      status = 'connection error';
-      
-      if (error.name === 'AbortError') {
-        errorMessage = 'Connection timeout - check if server is running and IP is correct';
-      } else if (error.message.includes('Failed to fetch')) {
-        errorMessage = 'Cannot reach server - check IP address and network connection';
-      } else {
-        errorMessage = `Connection error: ${error.message}`;
-      }
-      
-      console.error('Connection error:', error);
-    }
-  }
-  
-  // Send command to car
-  async function sendCommand(action, speed = currentSpeed) {
-    if (!connected) {
-      alert('Please connect to the car first!');
-      return;
-    }
-    
-    try {
-      isMoving = true;
-      currentAction = action;
-      
-      const url = action === 'stop' 
-        ? `${serverUrl}/car/stop` 
-        : `${serverUrl}/car/${action}?speed=${speed}`;
-      
-      const response = await fetch(url, { 
-        method: 'POST',
-        mode: 'cors'
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        console.log('Command sent:', data);
-        errorMessage = '';
-      } else {
-        console.error('Command failed');
-        errorMessage = `Command failed: ${response.status}`;
-      }
-    } catch (error) {
-      console.error('Error sending command:', error);
-      errorMessage = `Command error: ${error.message}`;
-    }
-  }
-
-  // Individual motor control
-  async function controlIndividualMotor(motor, direction, speed = currentSpeed) {
-    if (!connected) {
-      alert('Please connect to the car first!');
-      return;
-    }
-    
-    try {
-      const url = `${serverUrl}/motor/${motor}`;
-      
-      const response = await fetch(url, { 
-        method: 'POST',
-        mode: 'cors',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          speed: direction === 'stop' ? 0 : speed,
-          direction: direction
-        })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        console.log('Individual motor command sent:', data);
-        
-        // Update motor state
-        if (motor === 'right') {
-          rightMotorState = direction;
-        } else if (motor === 'left') {
-          leftMotorState = direction;
-        }
-        
-        errorMessage = '';
-      } else {
-        console.error('Individual motor command failed');
-        errorMessage = `Motor command failed: ${response.status}`;
-      }
-    } catch (error) {
-      console.error('Error sending motor command:', error);
-      errorMessage = `Motor command error: ${error.message}`;
-    }
-  }
-  
-  // Stop the car
-  async function stopCar() {
-    await sendCommand('stop');
-    isMoving = false;
-    currentAction = 'stopped';
-  }
-
-  // Stop individual motor
-  async function stopIndividualMotor(motor) {
-    await controlIndividualMotor(motor, 'stop');
-  }
-
-  // Stop all motors (including individual ones)
-  async function stopAllMotors() {
-    await stopCar();
-    await stopIndividualMotor('right');
-    await stopIndividualMotor('left');
-    rightMotorState = 'stopped';
-    leftMotorState = 'stopped';
-  }
-  
-  // Keyboard controls
-  function handleKeydown(event) {
-    if (!connected) return;
-    
-    switch(event.key.toLowerCase()) {
-      case 'w':
-      case 'arrowup':
-        event.preventDefault();
-        sendCommand('forward');
-        break;
-      case 's':
-      case 'arrowdown':
-        event.preventDefault();
-        sendCommand('backward');
-        break;
-      case 'a':
-      case 'arrowleft':
-        event.preventDefault();
-        sendCommand('left');
-        break;
-      case 'd':
-      case 'arrowright':
-        event.preventDefault();
-        sendCommand('right');
-        break;
-      case ' ':
-        event.preventDefault();
-        stopAllMotors();
-        break;
-    }
-  }
-  
-  function handleKeyup(event) {
-    if (!connected) return;
-    
-    if (['w', 's', 'a', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(event.key.toLowerCase())) {
-      stopCar();
-    }
-  }
-  
-  onMount(() => {
-    window.addEventListener('keydown', handleKeydown);
-    window.addEventListener('keyup', handleKeyup);
-    
-    return () => {
-      window.removeEventListener('keydown', handleKeydown);
-      window.removeEventListener('keyup', handleKeyup);
+    // Form data
+    let newPinConfig = {
+        pin: '',
+        mode: 'output',
+        initial_state: false,
+        pull_up_down: 'floating'
     };
-  });
+    
+    let digitalWriteData = {
+        pin: '',
+        state: false
+    };
+    
+    let pwmConfig = {
+        pin: '',
+        frequency: 1000,
+        duty_cycle: 0
+    };
+    
+    // Load initial data
+    onMount(async () => {
+        await loadAllPins();
+        await loadPredefinedPins();
+    });
+    
+    // API Functions
+    async function makeRequest(endpoint, method = 'GET', body = null) {
+        try {
+            const config = {
+                method,
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            };
+            
+            if (body) {
+                config.body = JSON.stringify(body);
+            }
+            
+            const response = await fetch(`${apiUrl}${endpoint}`, config);
+            
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || 'Request failed');
+            }
+            
+            connectionStatus = 'connected';
+            return await response.json();
+        } catch (error) {
+            connectionStatus = 'error';
+            console.error('API Error:', error);
+            alert(`Error: ${error.message}`);
+            throw error;
+        }
+    }
+    
+    async function loadAllPins() {
+        try {
+            const data = await makeRequest('/pins/all');
+            pins = data.pins;
+            availablePins = data.available_pins;
+        } catch (error) {
+            console.error('Failed to load pins:', error);
+        }
+    }
+    
+    async function loadPredefinedPins() {
+        try {
+            const data = await makeRequest('/pins/predefined');
+            predefinedPins = data.predefined_pins;
+        } catch (error) {
+            console.error('Failed to load predefined pins:', error);
+        }
+    }
+    
+    async function configurePin() {
+        try {
+            const config = {
+                pin: parseInt(newPinConfig.pin),
+                mode: newPinConfig.mode,
+                initial_state: newPinConfig.mode === 'output' ? newPinConfig.initial_state : null,
+                pull_up_down: newPinConfig.mode === 'input' ? newPinConfig.pull_up_down : null
+            };
+            
+            await makeRequest('/pin/configure', 'POST', config);
+            await loadAllPins();
+            
+            // Reset form
+            newPinConfig = { pin: '', mode: 'output', initial_state: false, pull_up_down: 'floating' };
+        } catch (error) {
+            console.error('Failed to configure pin:', error);
+        }
+    }
+    
+    async function digitalWrite() {
+        try {
+            const data = {
+                pin: parseInt(digitalWriteData.pin),
+                state: digitalWriteData.state
+            };
+            
+            await makeRequest('/digital/write', 'POST', data);
+            await loadAllPins();
+        } catch (error) {
+            console.error('Failed to write digital pin:', error);
+        }
+    }
+    
+    async function digitalRead(pin) {
+        try {
+            const data = await makeRequest(`/digital/read/${pin}`);
+            await loadAllPins();
+            return data;
+        } catch (error) {
+            console.error('Failed to read digital pin:', error);
+        }
+    }
+    
+    async function startPWM() {
+        try {
+            const config = {
+                pin: parseInt(pwmConfig.pin),
+                frequency: parseFloat(pwmConfig.frequency),
+                duty_cycle: parseFloat(pwmConfig.duty_cycle)
+            };
+            
+            await makeRequest('/pwm/start', 'POST', config);
+            await loadAllPins();
+        } catch (error) {
+            console.error('Failed to start PWM:', error);
+        }
+    }
+    
+    async function updatePWM(pin, dutyCycle) {
+        try {
+            const data = {
+                pin: parseInt(pin),
+                duty_cycle: parseFloat(dutyCycle)
+            };
+            
+            await makeRequest('/pwm/update', 'PUT', data);
+            await loadAllPins();
+        } catch (error) {
+            console.error('Failed to update PWM:', error);
+        }
+    }
+    
+    async function stopPWM(pin) {
+        try {
+            await makeRequest(`/pwm/stop/${pin}`, 'POST');
+            await loadAllPins();
+        } catch (error) {
+            console.error('Failed to stop PWM:', error);
+        }
+    }
+    
+    async function cleanupAllPins() {
+        try {
+            await makeRequest('/pins/cleanup', 'POST');
+            await loadAllPins();
+        } catch (error) {
+            console.error('Failed to cleanup pins:', error);
+        }
+    }
+    
+    async function togglePredefinedPin(pinName, currentState) {
+        try {
+            const newState = !currentState;
+            await makeRequest(`/pins/predefined/${pinName}/digital?state=${newState}`, 'POST');
+            await loadAllPins();
+        } catch (error) {
+            console.error('Failed to toggle predefined pin:', error);
+        }
+    }
+    
+    async function updatePredefinedPWM(pinName, dutyCycle) {
+        try {
+            await makeRequest(`/pins/predefined/${pinName}/pwm?duty_cycle=${dutyCycle}`, 'POST');
+            await loadAllPins();
+        } catch (error) {
+            console.error('Failed to update predefined PWM:', error);
+        }
+    }
 </script>
 
-<svelte:head>
-  <title>RC Car Controller</title>
-</svelte:head>
-
-<main class="container">
-  <h1>🚗 RC Car Remote Controller</h1>
-  
-  <!-- Connection Section -->
-  <section class="connection-section">
-    <h2>Connection</h2>
-    <div class="connection-form">
-      <input 
-        bind:value={serverUrl} 
-        placeholder="Enter car IP (e.g., 192.168.1.100:8000)"
-        class="url-input"
-      />
-      <button on:click={checkConnection} class="connect-btn">
-        Connect
-      </button>
-    </div>
-    <div class="status">
-      Status: <span class="status-{status.replace(' ', '-')}">{status}</span>
-    </div>
-    {#if errorMessage}
-      <div class="error-message">{errorMessage}</div>
-    {/if}
-  </section>
-
-  {#if connected}
-    <!-- Speed Control -->
-    <section class="speed-section">
-      <h2>Speed Control</h2>
-      <div class="speed-control">
-        <label for="speed">Speed: {currentSpeed}%</label>
-        <input 
-          id="speed"
-          type="range" 
-          min="20" 
-          max="100" 
-          bind:value={currentSpeed}
-          class="speed-slider"
-        />
-      </div>
-    </section>
-
-    <!-- Controller Section -->
-    <section class="controller-section">
-      <h2>Main Controller</h2>
-      <div class="current-action">
-        Current Action: <span class="action-{currentAction}">{currentAction}</span>
-      </div>
-      
-      <div class="controller">
-        <!-- Forward Button -->
-        <button 
-          class="control-btn forward"
-          on:mousedown={() => sendCommand('forward')}
-          on:mouseup={stopCar}
-          on:mouseleave={stopCar}
-        >
-          ↑
-        </button>
-        
-        <!-- Left and Right Buttons -->
-        <div class="horizontal-controls">
-          <button 
-            class="control-btn left"
-            on:mousedown={() => sendCommand('left')}
-            on:mouseup={stopCar}
-            on:mouseleave={stopCar}
-          >
-            ←
-          </button>
-          
-          <button 
-            class="control-btn stop"
-            on:click={stopAllMotors}
-          >
-            STOP ALL
-          </button>
-          
-          <button 
-            class="control-btn right"
-            on:mousedown={() => sendCommand('right')}
-            on:mouseup={stopCar}
-            on:mouseleave={stopCar}
-          >
-            →
-          </button>
+<div class="container">
+    <header>
+        <h1>GPIO Controller</h1>
+        <div class="connection-status {connectionStatus}">
+            Status: {connectionStatus.toUpperCase()}
         </div>
         
-        <!-- Backward Button -->
-        <button 
-          class="control-btn backward"
-          on:mousedown={() => sendCommand('backward')}
-          on:mouseup={stopCar}
-          on:mouseleave={stopCar}
-        >
-          ↓
-        </button>
-      </div>
-    </section>
-
-    <!-- Individual Motor Control Section -->
-    <section class="individual-motor-section">
-      <h2>Individual Motor Control</h2>
-      <div class="motor-controls">
-        
-        <!-- Right Motor Controls -->
-        <div class="motor-group">
-          <h3>Right Motor</h3>
-          <div class="motor-status">
-            Status: <span class="motor-{rightMotorState}">{rightMotorState}</span>
-          </div>
-          <div class="motor-buttons">
-            <button 
-              class="motor-btn forward"
-              on:mousedown={() => controlIndividualMotor('right', 'forward')}
-              on:mouseup={() => stopIndividualMotor('right')}
-              on:mouseleave={() => stopIndividualMotor('right')}
-            >
-              ↑ Forward
-            </button>
-            <button 
-              class="motor-btn stop"
-              on:click={() => stopIndividualMotor('right')}
-            >
-              ⏹ Stop
-            </button>
-            <button 
-              class="motor-btn backward"
-              on:mousedown={() => controlIndividualMotor('right', 'backward')}
-              on:mouseup={() => stopIndividualMotor('right')}
-              on:mouseleave={() => stopIndividualMotor('right')}
-            >
-              ↓ Backward
-            </button>
-          </div>
+        <div class="api-config">
+            <label>
+                API URL:
+                <input type="text" bind:value={apiUrl} placeholder="http://192.168.1.100:8000" />
+            </label>
+            <button on:click={loadAllPins}>Refresh</button>
         </div>
+    </header>
 
-        <!-- Left Motor Controls -->
-        <div class="motor-group">
-          <h3>Left Motor</h3>
-          <div class="motor-status">
-            Status: <span class="motor-{leftMotorState}">{leftMotorState}</span>
-          </div>
-          <div class="motor-buttons">
-            <button 
-              class="motor-btn forward"
-              on:mousedown={() => controlIndividualMotor('left', 'forward')}
-              on:mouseup={() => stopIndividualMotor('left')}
-              on:mouseleave={() => stopIndividualMotor('left')}
-            >
-              ↑ Forward
-            </button>
-            <button 
-              class="motor-btn stop"
-              on:click={() => stopIndividualMotor('left')}
-            >
-              ⏹ Stop
-            </button>
-            <button 
-              class="motor-btn backward"
-              on:mousedown={() => controlIndividualMotor('left', 'backward')}
-              on:mouseup={() => stopIndividualMotor('left')}
-              on:mouseleave={() => stopIndividualMotor('left')}
-            >
-              ↓ Backward
-            </button>
-          </div>
-        </div>
-      </div>
-    </section>
+    <main>
+        <!-- Pin Configuration Section -->
+        <section class="card">
+            <h2>Configure New Pin</h2>
+            <form on:submit|preventDefault={configurePin}>
+                <div class="form-group">
+                    <label>
+                        Pin Number:
+                        <input type="number" bind:value={newPinConfig.pin} required />
+                    </label>
+                    
+                    <label>
+                        Mode:
+                        <select bind:value={newPinConfig.mode}>
+                            <option value="output">Output</option>
+                            <option value="input">Input</option>
+                        </select>
+                    </label>
+                    
+                    {#if newPinConfig.mode === 'output'}
+                        <label>
+                            <input type="checkbox" bind:checked={newPinConfig.initial_state} />
+                            Initial State (HIGH)
+                        </label>
+                    {/if}
+                    
+                    {#if newPinConfig.mode === 'input'}
+                        <label>
+                            Pull Resistor:
+                            <select bind:value={newPinConfig.pull_up_down}>
+                                <option value="floating">Floating</option>
+                                <option value="up">Pull Up</option>
+                                <option value="down">Pull Down</option>
+                            </select>
+                        </label>
+                    {/if}
+                </div>
+                
+                <button type="submit">Configure Pin</button>
+            </form>
+        </section>
 
-    <!-- Keyboard Controls Info -->
-    <section class="keyboard-info">
-      <h3>Keyboard Controls</h3>
-      <div class="keyboard-grid">
-        <div>W / ↑ : Forward</div>
-        <div>S / ↓ : Backward</div>
-        <div>A / ← : Left</div>
-        <div>D / → : Right</div>
-        <div>Space : Stop All</div>
-      </div>
-    </section>
-  {/if}
-</main>
+        <!-- Quick Digital Control -->
+        <section class="card">
+            <h2>Digital Control</h2>
+            <form on:submit|preventDefault={digitalWrite}>
+                <div class="form-group">
+                    <label>
+                        Pin:
+                        <select bind:value={digitalWriteData.pin} required>
+                            <option value="">Select Pin</option>
+                            {#each Object.entries(pins).filter(([pin, config]) => config.mode === 'output') as [pin, config]}
+                                <option value={pin}>Pin {pin}</option>
+                            {/each}
+                        </select>
+                    </label>
+                    
+                    <label>
+                        <input type="checkbox" bind:checked={digitalWriteData.state} />
+                        Set HIGH
+                    </label>
+                </div>
+                
+                <button type="submit">Write Digital</button>
+            </form>
+        </section>
+
+        <!-- PWM Control -->
+        <section class="card">
+            <h2>PWM Control</h2>
+            <form on:submit|preventDefault={startPWM}>
+                <div class="form-group">
+                    <label>
+                        Pin:
+                        <select bind:value={pwmConfig.pin} required>
+                            <option value="">Select Pin</option>
+                            {#each Object.entries(pins).filter(([pin, config]) => config.mode === 'output') as [pin, config]}
+                                <option value={pin}>Pin {pin}</option>
+                            {/each}
+                        </select>
+                    </label>
+                    
+                    <label>
+                        Frequency (Hz):
+                        <input type="number" bind:value={pwmConfig.frequency} min="0.1" max="40000" step="0.1" required />
+                    </label>
+                    
+                    <label>
+                        Duty Cycle (%):
+                        <input type="number" bind:value={pwmConfig.duty_cycle} min="0" max="100" step="0.1" required />
+                    </label>
+                </div>
+                
+                <button type="submit">Start PWM</button>
+            </form>
+        </section>
+
+        <!-- Configured Pins Display -->
+        <section class="card">
+            <h2>Configured Pins</h2>
+            
+            {#if Object.keys(pins).length === 0}
+                <p>No pins configured yet.</p>
+            {:else}
+                <div class="pins-grid">
+                    {#each Object.entries(pins) as [pin, config]}
+                        <div class="pin-card">
+                            <h3>Pin {pin}</h3>
+                            <p><strong>Mode:</strong> {config.mode}</p>
+                            
+                            {#if config.mode === 'output'}
+                                <p><strong>State:</strong> {config.state ? 'HIGH' : 'LOW'}</p>
+                                
+                                <div class="pin-controls">
+                                    <button 
+                                        class="btn-toggle {config.state ? 'active' : ''}"
+                                        on:click={() => digitalWrite({pin: parseInt(pin), state: !config.state})}
+                                    >
+                                        Toggle
+                                    </button>
+                                    
+                                    <button on:click={() => digitalRead(pin)}>Read</button>
+                                </div>
+                                
+                                {#if config.pwm}
+                                    <div class="pwm-control">
+                                        <p><strong>PWM:</strong> {config.pwm.frequency}Hz, {config.pwm.duty_cycle}%</p>
+                                        
+                                        <label>
+                                            Duty Cycle:
+                                            <input 
+                                                type="range" 
+                                                min="0" 
+                                                max="100" 
+                                                step="1"
+                                                value={config.pwm.duty_cycle}
+                                                on:input={(e) => updatePWM(pin, e.target.value)}
+                                            />
+                                            <span>{config.pwm.duty_cycle}%</span>
+                                        </label>
+                                        
+                                        <button class="btn-danger" on:click={() => stopPWM(pin)}>Stop PWM</button>
+                                    </div>
+                                {:else}
+                                    <button on:click={() => startPWM({pin: parseInt(pin), frequency: 1000, duty_cycle: 50})}>
+                                        Start PWM
+                                    </button>
+                                {/if}
+                            {:else}
+                                <p><strong>Pull:</strong> {config.pull || 'floating'}</p>
+                                <button on:click={() => digitalRead(pin)}>Read Value</button>
+                            {/if}
+                        </div>
+                    {/each}
+                </div>
+            {/if}
+        </section>
+
+        <!-- Predefined Pins -->
+        {#if Object.keys(predefinedPins).length > 0}
+            <section class="card">
+                <h2>Predefined Pins</h2>
+                <div class="predefined-pins">
+                    {#each Object.entries(predefinedPins) as [name, pin]}
+                        <div class="predefined-pin">
+                            <h4>{name} (Pin {pin})</h4>
+                            
+                            {#if pins[pin] && pins[pin].mode === 'output'}
+                                <div class="controls">
+                                    <button 
+                                        class="btn-toggle {pins[pin].state ? 'active' : ''}"
+                                        on:click={() => togglePredefinedPin(name, pins[pin].state)}
+                                    >
+                                        {pins[pin].state ? 'ON' : 'OFF'}
+                                    </button>
+                                    
+                                    <label>
+                                        PWM:
+                                        <input 
+                                            type="range" 
+                                            min="0" 
+                                            max="100" 
+                                            value={pins[pin].pwm?.duty_cycle || 0}
+                                            on:input={(e) => updatePredefinedPWM(name, e.target.value)}
+                                        />
+                                        <span>{pins[pin].pwm?.duty_cycle || 0}%</span>
+                                    </label>
+                                </div>
+                            {:else}
+                                <p class="not-configured">Not configured as output</p>
+                            {/if}
+                        </div>
+                    {/each}
+                </div>
+            </section>
+        {/if}
+
+        <!-- System Controls -->
+        <section class="card">
+            <h2>System Controls</h2>
+            <div class="system-controls">
+                <button class="btn-danger" on:click={cleanupAllPins}>
+                    Cleanup All Pins
+                </button>
+                <button on:click={loadAllPins}>
+                    Refresh All Data
+                </button>
+            </div>
+        </section>
+    </main>
+</div>
 
 <style>
-  :global(body) {
-    margin: 0;
-    padding: 0;
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    min-height: 100vh;
-  }
-
-  .container {
-    max-width: 800px;
-    margin: 0 auto;
-    padding: 20px;
-    color: white;
-  }
-
-  h1 {
-    text-align: center;
-    font-size: 2.5rem;
-    margin-bottom: 2rem;
-    text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-  }
-
-  h2 {
-    color: #f0f0f0;
-    border-bottom: 2px solid rgba(255,255,255,0.3);
-    padding-bottom: 10px;
-  }
-
-  h3 {
-    color: #f0f0f0;
-    margin-bottom: 10px;
-    text-align: center;
-  }
-
-  /* Connection Section */
-  .connection-section {
-    background: rgba(255,255,255,0.1);
-    padding: 20px;
-    border-radius: 15px;
-    margin-bottom: 20px;
-    backdrop-filter: blur(10px);
-  }
-
-  .connection-form {
-    display: flex;
-    gap: 10px;
-    margin-bottom: 15px;
-  }
-
-  .url-input {
-    flex: 1;
-    padding: 12px;
-    border: none;
-    border-radius: 8px;
-    font-size: 16px;
-    background: rgba(255,255,255,0.9);
-  }
-
-  .connect-btn {
-    padding: 12px 24px;
-    background: #4CAF50;
-    color: white;
-    border: none;
-    border-radius: 8px;
-    font-size: 16px;
-    cursor: pointer;
-    transition: background 0.3s;
-  }
-
-  .connect-btn:hover {
-    background: #45a049;
-  }
-
-  .status {
-    font-weight: bold;
-  }
-
-  .status-connected {
-    color: #4CAF50;
-  }
-
-  .status-disconnected {
-    color: #f44336;
-  }
-
-  .status-connecting {
-    color: #ff9800;
-  }
-
-  .status-connection-failed, .status-connection-error {
-    color: #f44336;
-  }
-
-  .error-message {
-    background: rgba(244, 67, 54, 0.2);
-    border: 1px solid #f44336;
-    color: #ffcdd2;
-    padding: 10px;
-    border-radius: 8px;
-    margin-top: 10px;
-    font-size: 14px;
-  }
-
-  /* Speed Section */
-  .speed-section {
-    background: rgba(255,255,255,0.1);
-    padding: 20px;
-    border-radius: 15px;
-    margin-bottom: 20px;
-    backdrop-filter: blur(10px);
-  }
-
-  .speed-control {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .speed-slider {
-    width: 100%;
-    height: 6px;
-    border-radius: 3px;
-    background: rgba(255,255,255,0.3);
-    outline: none;
-  }
-
-  /* Controller Section */
-  .controller-section {
-    background: rgba(255,255,255,0.1);
-    padding: 20px;
-    border-radius: 15px;
-    margin-bottom: 20px;
-    backdrop-filter: blur(10px);
-  }
-
-  .current-action {
-    text-align: center;
-    margin-bottom: 20px;
-    font-size: 18px;
-    font-weight: bold;
-  }
-
-  .action-stopped {
-    color: #f44336;
-  }
-
-  .action-forward, .action-backward, .action-left, .action-right {
-    color: #4CAF50;
-  }
-
-  .controller {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 10px;
-    max-width: 300px;
-    margin: 0 auto;
-  }
-
-  .horizontal-controls {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-  }
-
-  .control-btn {
-    width: 80px;
-    height: 80px;
-    border: none;
-    border-radius: 15px;
-    font-size: 24px;
-    font-weight: bold;
-    cursor: pointer;
-    transition: all 0.2s;
-    user-select: none;
-    background: rgba(255,255,255,0.2);
-    color: white;
-    box-shadow: 0 4px 8px rgba(0,0,0,0.3);
-  }
-
-  .control-btn:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 12px rgba(0,0,0,0.4);
-  }
-
-  .control-btn:active {
-    transform: translateY(0);
-    background: rgba(255,255,255,0.3);
-  }
-
-  .stop {
-    background: #f44336 !important;
-    font-size: 10px;
-  }
-
-  .stop:hover {
-    background: #d32f2f !important;
-  }
-
-  /* Individual Motor Control */
-  .individual-motor-section {
-    background: rgba(255,255,255,0.1);
-    padding: 20px;
-    border-radius: 15px;
-    margin-bottom: 20px;
-    backdrop-filter: blur(10px);
-  }
-
-  .motor-controls {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
-  }
-
-  .motor-group {
-    background: rgba(255,255,255,0.1);
-    padding: 15px;
-    border-radius: 10px;
-    border: 2px solid rgba(255,255,255,0.2);
-  }
-
-  .motor-status {
-    text-align: center;
-    margin-bottom: 15px;
-    font-weight: bold;
-  }
-
-  .motor-stopped {
-    color: #f44336;
-  }
-
-  .motor-stop {
-    color: #f44336;
-  }
-
-  .motor-forward, .motor-backward {
-    color: #4CAF50;
-  }
-
-  .motor-buttons {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .motor-btn {
-    padding: 12px 16px;
-    border: none;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: bold;
-    cursor: pointer;
-    transition: all 0.2s;
-    user-select: none;
-    background: rgba(255,255,255,0.2);
-    color: white;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-  }
-
-  .motor-btn:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(0,0,0,0.4);
-  }
-
-  .motor-btn:active {
-    transform: translateY(0);
-    background: rgba(255,255,255,0.3);
-  }
-
-  .motor-btn.forward {
-    background: rgba(76, 175, 80, 0.8);
-  }
-
-  .motor-btn.backward {
-    background: rgba(255, 152, 0, 0.8);
-  }
-
-  .motor-btn.stop {
-    background: rgba(244, 67, 54, 0.8);
-  }
-
-  /* Keyboard Info */
-  .keyboard-info {
-    background: rgba(255,255,255,0.1);
-    padding: 20px;
-    border-radius: 15px;
-    backdrop-filter: blur(10px);
-  }
-
-  .keyboard-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 10px;
-    margin-top: 15px;
-  }
-
-  .keyboard-grid div {
-    background: rgba(255,255,255,0.1);
-    padding: 10px;
-    border-radius: 8px;
-    text-align: center;
-  }
-
-  /* Responsive Design */
-  @media (max-width: 600px) {
     .container {
-      padding: 10px;
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    header {
+        text-align: center;
+        margin-bottom: 30px;
+        padding: 20px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border-radius: 10px;
     }
 
     h1 {
-      font-size: 2rem;
+        margin: 0 0 15px 0;
+        font-size: 2.5em;
     }
 
-    .connection-form {
-      flex-direction: column;
+    .connection-status {
+        padding: 5px 15px;
+        border-radius: 20px;
+        font-weight: bold;
+        margin-bottom: 15px;
     }
 
-    .control-btn {
-      width: 60px;
-      height: 60px;
-      font-size: 20px;
+    .connection-status.connected {
+        background-color: #4CAF50;
     }
 
-    .motor-controls {
-      grid-template-columns: 1fr;
+    .connection-status.disconnected {
+        background-color: #FF9800;
     }
 
-    .keyboard-grid {
-      grid-template-columns: 1fr;
+    .connection-status.error {
+        background-color: #f44336;
     }
-  }
+
+    .api-config {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        justify-content: center;
+        flex-wrap: wrap;
+    }
+
+    .api-config input {
+        padding: 8px;
+        border: none;
+        border-radius: 5px;
+        margin-left: 5px;
+        min-width: 250px;
+    }
+
+    .card {
+        background: white;
+        border-radius: 10px;
+        padding: 25px;
+        margin-bottom: 25px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        border: 1px solid #e0e0e0;
+    }
+
+    .card h2 {
+        margin-top: 0;
+        color: #333;
+        border-bottom: 2px solid #667eea;
+        padding-bottom: 10px;
+    }
+
+    .form-group {
+        display: flex;
+        gap: 15px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 15px;
+    }
+
+    .form-group label {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-weight: 500;
+    }
+
+    input, select {
+        padding: 8px 12px;
+        border: 2px solid #ddd;
+        border-radius: 5px;
+        font-size: 14px;
+        transition: border-color 0.3s;
+    }
+
+    input:focus, select:focus {
+        outline: none;
+        border-color: #667eea;
+    }
+
+    button {
+        background: #667eea;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 5px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 500;
+        transition: all 0.3s;
+    }
+
+    button:hover {
+        background: #5a67d8;
+        transform: translateY(-1px);
+    }
+
+    .btn-danger {
+        background: #e53e3e;
+    }
+
+    .btn-danger:hover {
+        background: #c53030;
+    }
+
+    .btn-toggle {
+        background: #718096;
+    }
+
+    .btn-toggle.active {
+        background: #48bb78;
+    }
+
+    .pins-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 20px;
+    }
+
+    .pin-card {
+        border: 2px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 20px;
+        background: #f7fafc;
+    }
+
+    .pin-card h3 {
+        margin-top: 0;
+        color: #2d3748;
+    }
+
+    .pin-controls {
+        display: flex;
+        gap: 10px;
+        margin: 15px 0;
+        flex-wrap: wrap;
+    }
+
+    .pwm-control {
+        margin-top: 15px;
+        padding: 15px;
+        background: #edf2f7;
+        border-radius: 5px;
+    }
+
+    .pwm-control label {
+        display: block;
+        margin: 10px 0;
+    }
+
+    .pwm-control input[type="range"] {
+        width: 100%;
+        margin: 5px 0;
+    }
+
+    .predefined-pins {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+        gap: 15px;
+    }
+
+    .predefined-pin {
+        border: 1px solid #cbd5e0;
+        border-radius: 5px;
+        padding: 15px;
+        background: #f8f9fa;
+    }
+
+    .predefined-pin h4 {
+        margin-top: 0;
+        color: #2d3748;
+    }
+
+    .controls {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .controls label {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 14px;
+    }
+
+    .not-configured {
+        color: #718096;
+        font-style: italic;
+    }
+
+    .system-controls {
+        display: flex;
+        gap: 15px;
+        flex-wrap: wrap;
+    }
+
+    /* Responsive design */
+    @media (max-width: 768px) {
+        .container {
+            padding: 10px;
+        }
+        
+        .form-group {
+            flex-direction: column;
+            align-items: stretch;
+        }
+        
+        .pins-grid {
+            grid-template-columns: 1fr;
+        }
+        
+        .api-config {
+            flex-direction: column;
+        }
+        
+        .api-config input {
+            min-width: auto;
+            width: 100%;
+        }
+    }
 </style>

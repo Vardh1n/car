@@ -1,52 +1,17 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import Dict, Optional
 import RPi.GPIO as GPIO
-import time
-from contextlib import asynccontextmanager
-import platform
-from pydantic import BaseModel
+import logging
 
-# GPIO pin definitions
-ENA = 18  # Right motors enable
-ENB = 13  # Left motors enable
-IN1 = 23  # Right motor 1
-IN2 = 24  # Right motor 2
-IN3 = 27  # Left motor 1
-IN4 = 22  # Left motor 2
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Add this after imports
-RUNNING_ON_PI = platform.machine().startswith('arm') or platform.machine().startswith('aarch64')
+app = FastAPI(title="GPIO Controller", description="Modular GPIO control system")
 
-# Pydantic models for request bodies
-class MotorControl(BaseModel):
-    speed: int = 50  # 0-100
-    direction: str = "forward"  # forward, backward, stop
-
-class PinControl(BaseModel):
-    state: bool
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    if RUNNING_ON_PI:
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup([ENA, ENB, IN1, IN2, IN3, IN4], GPIO.OUT)
-        
-        # Initialize PWM for speed control
-        global pwm_ena, pwm_enb
-        pwm_ena = GPIO.PWM(ENA, 1000)  # 1000Hz frequency
-        pwm_enb = GPIO.PWM(ENB, 1000)
-        pwm_ena.start(0)
-        pwm_enb.start(0)
-    
-    yield
-    
-    # Shutdown
-    if RUNNING_ON_PI:
-        GPIO.cleanup()
-
-app = FastAPI(lifespan=lifespan)
-
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -55,133 +20,259 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Motor control functions
-def set_motor_speed(pin, speed):
-    if RUNNING_ON_PI:
-        if pin == ENA:
-            pwm_ena.ChangeDutyCycle(speed)
-        elif pin == ENB:
-            pwm_enb.ChangeDutyCycle(speed)
+# GPIO pin definitions
+AVAILABLE_PINS = {
+    "ENA": 18,
+    "ENB": 13,
+    "IN1": 23,
+    "IN2": 24,
+    "IN3": 27,
+    "IN4": 22
+}
 
-def set_motor_direction(in1, in2, direction):
-    if not RUNNING_ON_PI:
-        return
+# PWM instances storage
+pwm_instances: Dict[int, GPIO.PWM] = {}
+pin_states: Dict[int, Dict] = {}
+
+# Pydantic models
+class PinConfig(BaseModel):
+    pin: int = Field(..., description="GPIO pin number")
+    mode: str = Field(..., description="Pin mode: 'output' or 'input'")
+    initial_state: Optional[bool] = Field(None, description="Initial state for output pins")
+    pull_up_down: Optional[str] = Field(None, description="Pull resistor: 'up', 'down', or 'floating'")
+
+class DigitalWrite(BaseModel):
+    pin: int = Field(..., description="GPIO pin number")
+    state: bool = Field(..., description="Pin state: True (HIGH) or False (LOW)")
+
+class PWMConfig(BaseModel):
+    pin: int = Field(..., description="GPIO pin number")
+    frequency: float = Field(..., ge=0.1, le=40000, description="PWM frequency in Hz")
+    duty_cycle: float = Field(0, ge=0, le=100, description="PWM duty cycle (0-100%)")
+
+class PWMUpdate(BaseModel):
+    pin: int = Field(..., description="GPIO pin number")
+    duty_cycle: float = Field(..., ge=0, le=100, description="PWM duty cycle (0-100%)")
+
+# Initialize GPIO
+@app.on_event("startup")
+async def startup_event():
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+    logger.info("GPIO initialized")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    # Stop all PWM instances
+    for pwm in pwm_instances.values():
+        pwm.stop()
+    GPIO.cleanup()
+    logger.info("GPIO cleaned up")
+
+# Pin configuration endpoints
+@app.post("/pin/configure")
+async def configure_pin(config: PinConfig):
+    """Configure a GPIO pin as input or output"""
+    try:
+        pin = config.pin
+        
+        if config.mode.lower() == "output":
+            GPIO.setup(pin, GPIO.OUT)
+            if config.initial_state is not None:
+                GPIO.output(pin, config.initial_state)
+            pin_states[pin] = {"mode": "output", "state": config.initial_state}
+            
+        elif config.mode.lower() == "input":
+            pull = GPIO.PUD_OFF
+            if config.pull_up_down:
+                if config.pull_up_down.lower() == "up":
+                    pull = GPIO.PUD_UP
+                elif config.pull_up_down.lower() == "down":
+                    pull = GPIO.PUD_DOWN
+            
+            GPIO.setup(pin, GPIO.IN, pull_up_down=pull)
+            pin_states[pin] = {"mode": "input", "pull": config.pull_up_down}
+        
+        else:
+            raise HTTPException(status_code=400, detail="Mode must be 'input' or 'output'")
+        
+        logger.info(f"Pin {pin} configured as {config.mode}")
+        return {"message": f"Pin {pin} configured successfully", "config": pin_states[pin]}
     
-    if direction == "forward":
-        GPIO.output(in1, GPIO.HIGH)
-        GPIO.output(in2, GPIO.LOW)
-    elif direction == "backward":
-        GPIO.output(in1, GPIO.LOW)
-        GPIO.output(in2, GPIO.HIGH)
-    else:  # stop
-        GPIO.output(in1, GPIO.LOW)
-        GPIO.output(in2, GPIO.LOW)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Individual motor control endpoints
-@app.post("/motor/right")
-async def control_right_motor(motor: MotorControl):
-    """Control right motor (ENA, IN1, IN2)"""
-    set_motor_direction(IN1, IN2, motor.direction)
-    speed = motor.speed if motor.direction != "stop" else 0
-    set_motor_speed(ENA, speed)
-    return {"status": "success", "motor": "right", "speed": speed, "direction": motor.direction}
+@app.get("/pin/{pin}/status")
+async def get_pin_status(pin: int):
+    """Get the current status of a GPIO pin"""
+    try:
+        if pin not in pin_states:
+            raise HTTPException(status_code=404, detail="Pin not configured")
+        
+        status = pin_states[pin].copy()
+        if status["mode"] == "input":
+            status["current_value"] = GPIO.input(pin)
+        elif status["mode"] == "output":
+            status["current_value"] = GPIO.input(pin)
+        
+        if pin in pwm_instances:
+            status["pwm_active"] = True
+        
+        return status
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/motor/left")
-async def control_left_motor(motor: MotorControl):
-    """Control left motor (ENB, IN3, IN4)"""
-    set_motor_direction(IN3, IN4, motor.direction)
-    speed = motor.speed if motor.direction != "stop" else 0
-    set_motor_speed(ENB, speed)
-    return {"status": "success", "motor": "left", "speed": speed, "direction": motor.direction}
+# Digital control endpoints
+@app.post("/digital/write")
+async def digital_write(data: DigitalWrite):
+    """Set digital output state"""
+    try:
+        pin = data.pin
+        
+        if pin not in pin_states or pin_states[pin]["mode"] != "output":
+            raise HTTPException(status_code=400, detail="Pin must be configured as output")
+        
+        GPIO.output(pin, data.state)
+        pin_states[pin]["state"] = data.state
+        
+        logger.info(f"Pin {pin} set to {data.state}")
+        return {"message": f"Pin {pin} set to {'HIGH' if data.state else 'LOW'}"}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Car movement endpoints
-@app.post("/car/forward")
-async def move_forward(speed: int = 50):
-    """Move car forward"""
-    set_motor_direction(IN1, IN2, "forward")
-    set_motor_direction(IN3, IN4, "forward")
-    set_motor_speed(ENA, speed)
-    set_motor_speed(ENB, speed)
-    return {"status": "success", "action": "forward", "speed": speed}
+@app.get("/digital/read/{pin}")
+async def digital_read(pin: int):
+    """Read digital input state"""
+    try:
+        if pin not in pin_states:
+            raise HTTPException(status_code=404, detail="Pin not configured")
+        
+        value = GPIO.input(pin)
+        return {"pin": pin, "value": value, "state": "HIGH" if value else "LOW"}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/car/backward")
-async def move_backward(speed: int = 50):
-    """Move car backward"""
-    set_motor_direction(IN1, IN2, "backward")
-    set_motor_direction(IN3, IN4, "backward")
-    set_motor_speed(ENA, speed)
-    set_motor_speed(ENB, speed)
-    return {"status": "success", "action": "backward", "speed": speed}
-
-@app.post("/car/left")
-async def turn_left(speed: int = 50):
-    """Turn car left"""
-    set_motor_direction(IN1, IN2, "forward")  # Right motor forward
-    set_motor_direction(IN3, IN4, "backward")  # Left motor backward
-    set_motor_speed(ENA, speed)
-    set_motor_speed(ENB, speed)
-    return {"status": "success", "action": "left", "speed": speed}
-
-@app.post("/car/right")
-async def turn_right(speed: int = 50):
-    """Turn car right"""
-    set_motor_direction(IN1, IN2, "backward")  # Right motor backward
-    set_motor_direction(IN3, IN4, "forward")  # Left motor forward
-    set_motor_speed(ENA, speed)
-    set_motor_speed(ENB, speed)
-    return {"status": "success", "action": "right", "speed": speed}
-
-@app.post("/car/stop")
-async def stop_car():
-    """Stop all motors"""
-    set_motor_direction(IN1, IN2, "stop")
-    set_motor_direction(IN3, IN4, "stop")
-    set_motor_speed(ENA, 0)
-    set_motor_speed(ENB, 0)
-    return {"status": "success", "action": "stop"}
-
-# Individual pin control endpoints
-@app.post("/pin/{pin_number}")
-async def control_pin(pin_number: int, control: PinControl):
-    """Control individual GPIO pin"""
-    if RUNNING_ON_PI:
-        try:
-            GPIO.setup(pin_number, GPIO.OUT)
-            GPIO.output(pin_number, GPIO.HIGH if control.state else GPIO.LOW)
-            return {"status": "success", "pin": pin_number, "state": control.state}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-    return {"status": "success", "pin": pin_number, "state": control.state, "note": "Not running on Pi"}
-
-# Get pin status
-@app.get("/pin/{pin_number}")
-async def get_pin_status(pin_number: int):
-    """Get GPIO pin status"""
-    if RUNNING_ON_PI:
-        try:
-            GPIO.setup(pin_number, GPIO.IN)
-            state = GPIO.input(pin_number)
-            return {"pin": pin_number, "state": bool(state)}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-    return {"pin": pin_number, "state": False, "note": "Not running on Pi"}
-
-# Status endpoint
-@app.get("/status")
-async def get_status():
-    """Get system status"""
-    return {
-        "running_on_pi": RUNNING_ON_PI,
-        "platform": platform.machine(),
-        "gpio_pins": {
-            "ENA": ENA,
-            "ENB": ENB,
-            "IN1": IN1,
-            "IN2": IN2,
-            "IN3": IN3,
-            "IN4": IN4
+# PWM control endpoints
+@app.post("/pwm/start")
+async def start_pwm(config: PWMConfig):
+    """Start PWM on a pin"""
+    try:
+        pin = config.pin
+        
+        if pin not in pin_states or pin_states[pin]["mode"] != "output":
+            raise HTTPException(status_code=400, detail="Pin must be configured as output")
+        
+        if pin in pwm_instances:
+            pwm_instances[pin].stop()
+        
+        pwm = GPIO.PWM(pin, config.frequency)
+        pwm.start(config.duty_cycle)
+        pwm_instances[pin] = pwm
+        
+        pin_states[pin]["pwm"] = {
+            "frequency": config.frequency,
+            "duty_cycle": config.duty_cycle
         }
-    }
+        
+        logger.info(f"PWM started on pin {pin}: {config.frequency}Hz, {config.duty_cycle}%")
+        return {"message": f"PWM started on pin {pin}", "config": config.dict()}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/pwm/update")
+async def update_pwm_duty_cycle(data: PWMUpdate):
+    """Update PWM duty cycle"""
+    try:
+        pin = data.pin
+        
+        if pin not in pwm_instances:
+            raise HTTPException(status_code=404, detail="PWM not active on this pin")
+        
+        pwm_instances[pin].ChangeDutyCycle(data.duty_cycle)
+        pin_states[pin]["pwm"]["duty_cycle"] = data.duty_cycle
+        
+        logger.info(f"PWM duty cycle updated on pin {pin}: {data.duty_cycle}%")
+        return {"message": f"PWM duty cycle updated on pin {pin}", "duty_cycle": data.duty_cycle}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/pwm/stop/{pin}")
+async def stop_pwm(pin: int):
+    """Stop PWM on a pin"""
+    try:
+        if pin not in pwm_instances:
+            raise HTTPException(status_code=404, detail="PWM not active on this pin")
+        
+        pwm_instances[pin].stop()
+        del pwm_instances[pin]
+        
+        if "pwm" in pin_states[pin]:
+            del pin_states[pin]["pwm"]
+        
+        logger.info(f"PWM stopped on pin {pin}")
+        return {"message": f"PWM stopped on pin {pin}"}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Bulk operations
+@app.get("/pins/all")
+async def get_all_pins():
+    """Get status of all configured pins"""
+    return {"pins": pin_states, "available_pins": AVAILABLE_PINS}
+
+@app.post("/pins/cleanup")
+async def cleanup_all_pins():
+    """Stop all PWM and cleanup GPIO"""
+    try:
+        for pwm in pwm_instances.values():
+            pwm.stop()
+        pwm_instances.clear()
+        pin_states.clear()
+        GPIO.cleanup()
+        GPIO.setmode(GPIO.BCM)
+        
+        logger.info("All pins cleaned up")
+        return {"message": "All pins cleaned up successfully"}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Predefined pin shortcuts
+@app.get("/pins/predefined")
+async def get_predefined_pins():
+    """Get predefined pin mappings"""
+    return {"predefined_pins": AVAILABLE_PINS}
+
+@app.post("/pins/predefined/{pin_name}/digital")
+async def control_predefined_pin_digital(pin_name: str, state: bool):
+    """Control predefined pin digitally"""
+    if pin_name not in AVAILABLE_PINS:
+        raise HTTPException(status_code=404, detail="Predefined pin not found")
+    
+    pin = AVAILABLE_PINS[pin_name]
+    return await digital_write(DigitalWrite(pin=pin, state=state))
+
+@app.post("/pins/predefined/{pin_name}/pwm")
+async def control_predefined_pin_pwm(pin_name: str, duty_cycle: float):
+    """Control predefined pin PWM duty cycle"""
+    if pin_name not in AVAILABLE_PINS:
+        raise HTTPException(status_code=404, detail="Predefined pin not found")
+    
+    pin = AVAILABLE_PINS[pin_name]
+    
+    if pin not in pwm_instances:
+        # Start PWM with default frequency if not active
+        await start_pwm(PWMConfig(pin=pin, frequency=1000, duty_cycle=duty_cycle))
+    else:
+        await update_pwm_duty_cycle(PWMUpdate(pin=pin, duty_cycle=duty_cycle))
+    
+    return {"message": f"PWM updated on {pin_name} (pin {pin})", "duty_cycle": duty_cycle}
 
 if __name__ == "__main__":
     import uvicorn
