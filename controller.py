@@ -342,12 +342,12 @@ async def tank_drive(command: TankDriveCommand):
         right_speed = abs(command.right_speed)
         if command.right_speed > 0:
             # Forward
-            GPIO.output(AVAILABLE_PINS["IN3"], GPIO.LOW)
-            GPIO.output(AVAILABLE_PINS["IN4"], GPIO.HIGH)
-        elif command.right_speed < 0:
-            # Backward
             GPIO.output(AVAILABLE_PINS["IN3"], GPIO.HIGH)
             GPIO.output(AVAILABLE_PINS["IN4"], GPIO.LOW)
+        elif command.right_speed < 0:
+            # Backward
+            GPIO.output(AVAILABLE_PINS["IN3"], GPIO.LOW)
+            GPIO.output(AVAILABLE_PINS["IN4"], GPIO.HIGH)
         else:
             # Stop
             GPIO.output(AVAILABLE_PINS["IN3"], GPIO.LOW)
