@@ -228,6 +228,45 @@ async def left_motor_stop_endpoint():
     left_motor_stop()
     return {"action": "left_motor_stop"}
 
+# Basic movement control endpoints (add these after the individual motor functions)
+@app.post("/forward")
+async def move_forward(speed: int = 80):
+    """Move car forward"""
+    if not 0 <= speed <= 100:
+        return {"error": "Speed must be between 0 and 100"}
+    forward(speed)
+    return {"action": "forward", "speed": speed}
+
+@app.post("/backward")
+async def move_backward(speed: int = 80):
+    """Move car backward"""
+    if not 0 <= speed <= 100:
+        return {"error": "Speed must be between 0 and 100"}
+    backward(speed)
+    return {"action": "backward", "speed": speed}
+
+@app.post("/left")
+async def turn_left_endpoint(speed: int = 80):
+    """Turn car left"""
+    if not 0 <= speed <= 100:
+        return {"error": "Speed must be between 0 and 100"}
+    turn_left(speed)
+    return {"action": "left", "speed": speed}
+
+@app.post("/right")
+async def turn_right_endpoint(speed: int = 80):
+    """Turn car right"""
+    if not 0 <= speed <= 100:
+        return {"error": "Speed must be between 0 and 100"}
+    turn_right(speed)
+    return {"action": "right", "speed": speed}
+
+@app.post("/stop")
+async def stop_car():
+    """Stop all motors"""
+    stop_motors()
+    return {"action": "stop"}
+
 # Test individual pins endpoint
 @app.post("/test/pin/{pin_name}")
 async def test_pin(pin_name: str, state: str = "high"):
