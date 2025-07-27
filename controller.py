@@ -98,87 +98,110 @@ def stop_motors():
     GPIO.output([IN1, IN2, IN3, IN4], GPIO.LOW)
     pwm_ena.ChangeDutyCycle(0)
     pwm_enb.ChangeDutyCycle(0)
+    print("All motors stopped")
 
 def forward(speed=80):
     """Move car forward"""
-    # Right motors forward (assuming wheel 3 needs direction swap)
+    print(f"Moving forward at speed {speed}")
+    # Right motors forward
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
-    # Left motors forward (assuming wheel 4 needs direction swap)  
-    GPIO.output(IN3, GPIO.LOW)   # Swapped from HIGH
-    GPIO.output(IN4, GPIO.HIGH)  # Swapped from LOW
+    # Left motors forward - try both configurations
+    GPIO.output(IN3, GPIO.LOW)   
+    GPIO.output(IN4, GPIO.HIGH)  
     # Set speed
     pwm_ena.ChangeDutyCycle(speed)
     pwm_enb.ChangeDutyCycle(speed)
+    print(f"Right motor: IN1=HIGH, IN2=LOW, PWM={speed}")
+    print(f"Left motor: IN3=LOW, IN4=HIGH, PWM={speed}")
 
 def backward(speed=80):
     """Move car backward"""
+    print(f"Moving backward at speed {speed}")
     # Right motors backward
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.HIGH)
     # Left motors backward
-    GPIO.output(IN3, GPIO.HIGH)  # Swapped from LOW
-    GPIO.output(IN4, GPIO.LOW)   # Swapped from HIGH
+    GPIO.output(IN3, GPIO.HIGH)  
+    GPIO.output(IN4, GPIO.LOW)   
     # Set speed
     pwm_ena.ChangeDutyCycle(speed)
     pwm_enb.ChangeDutyCycle(speed)
+    print(f"Right motor: IN1=LOW, IN2=HIGH, PWM={speed}")
+    print(f"Left motor: IN3=HIGH, IN4=LOW, PWM={speed}")
 
 def turn_left(speed=80):
     """Turn car left (right motors forward, left motors backward)"""
+    print(f"Turning left at speed {speed}")
     # Right motors forward
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
     # Left motors backward
-    GPIO.output(IN3, GPIO.HIGH)  # Swapped from LOW
-    GPIO.output(IN4, GPIO.LOW)   # Swapped from HIGH
+    GPIO.output(IN3, GPIO.HIGH)  
+    GPIO.output(IN4, GPIO.LOW)   
     # Set speed
     pwm_ena.ChangeDutyCycle(speed)
     pwm_enb.ChangeDutyCycle(speed)
+    print(f"Right motor: IN1=HIGH, IN2=LOW, PWM={speed}")
+    print(f"Left motor: IN3=HIGH, IN4=LOW, PWM={speed}")
 
 def turn_right(speed=80):
     """Turn car right (left motors forward, right motors backward)"""
+    print(f"Turning right at speed {speed}")
     # Right motors backward
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.HIGH)
     # Left motors forward
-    GPIO.output(IN3, GPIO.LOW)   # Swapped from HIGH
-    GPIO.output(IN4, GPIO.HIGH)  # Swapped from LOW
+    GPIO.output(IN3, GPIO.LOW)   
+    GPIO.output(IN4, GPIO.HIGH)  
     # Set speed
     pwm_ena.ChangeDutyCycle(speed)
     pwm_enb.ChangeDutyCycle(speed)
+    print(f"Right motor: IN1=LOW, IN2=HIGH, PWM={speed}")
+    print(f"Left motor: IN3=LOW, IN4=HIGH, PWM={speed}")
 
 def right_motor_forward(speed=80):
     """Move right motor forward"""
+    print(f"Right motor forward at speed {speed}")
     GPIO.output(IN1, GPIO.HIGH)
     GPIO.output(IN2, GPIO.LOW)
     pwm_ena.ChangeDutyCycle(speed)
+    print(f"Right motor: IN1=HIGH, IN2=LOW, PWM={speed}")
 
 def right_motor_backward(speed=80):
     """Move right motor backward"""
+    print(f"Right motor backward at speed {speed}")
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.HIGH)
     pwm_ena.ChangeDutyCycle(speed)
+    print(f"Right motor: IN1=LOW, IN2=HIGH, PWM={speed}")
 
 def right_motor_stop():
     """Stop right motor"""
+    print("Right motor stopped")
     GPIO.output(IN1, GPIO.LOW)
     GPIO.output(IN2, GPIO.LOW)
     pwm_ena.ChangeDutyCycle(0)
 
 def left_motor_forward(speed=80):
     """Move left motor forward"""
-    GPIO.output(IN3, GPIO.LOW)   # Swapped from HIGH
-    GPIO.output(IN4, GPIO.HIGH)  # Swapped from LOW
+    print(f"Left motor forward at speed {speed}")
+    GPIO.output(IN3, GPIO.LOW)   
+    GPIO.output(IN4, GPIO.HIGH)  
     pwm_enb.ChangeDutyCycle(speed)
+    print(f"Left motor: IN3=LOW, IN4=HIGH, PWM={speed}")
 
 def left_motor_backward(speed=80):
     """Move left motor backward"""
-    GPIO.output(IN3, GPIO.HIGH)  # Swapped from LOW
-    GPIO.output(IN4, GPIO.LOW)   # Swapped from HIGH
+    print(f"Left motor backward at speed {speed}")
+    GPIO.output(IN3, GPIO.HIGH)  
+    GPIO.output(IN4, GPIO.LOW)   
     pwm_enb.ChangeDutyCycle(speed)
+    print(f"Left motor: IN3=HIGH, IN4=LOW, PWM={speed}")
 
 def left_motor_stop():
     """Stop left motor"""
+    print("Left motor stopped")
     GPIO.output(IN3, GPIO.LOW)
     GPIO.output(IN4, GPIO.LOW)
     pwm_enb.ChangeDutyCycle(0)
