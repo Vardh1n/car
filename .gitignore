@@ -3,3 +3,6 @@ venv
 build/
 build
 node_modules
+yolov8n.pt
+yolov8x.pt
+__pycache__/

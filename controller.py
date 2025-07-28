@@ -5,6 +5,10 @@ from typing import Dict, Optional
 import RPi.GPIO as GPIO
 import logging
 import cv2
+import asyncio
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +38,9 @@ AVAILABLE_PINS = {
 # PWM instances storage
 pwm_instances: Dict[int, GPIO.PWM] = {}
 pin_states: Dict[int, Dict] = {}
+
+# Thread executor for blocking operations
+executor = ThreadPoolExecutor(max_workers=4)
 
 # Pydantic models
 class PinConfig(BaseModel):
@@ -65,17 +72,33 @@ class DirectionalCommand(BaseModel):
 # Initialize GPIO
 @app.on_event("startup")
 async def startup_event():
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setwarnings(False)
-    logger.info("GPIO initialized")
+    try:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+        logger.info("GPIO initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize GPIO: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    # Stop all PWM instances
-    for pwm in pwm_instances.values():
-        pwm.stop()
-    GPIO.cleanup()
-    logger.info("GPIO cleaned up")
+    try:
+        # Stop all PWM instances
+        for pwm in pwm_instances.values():
+            try:
+                pwm.stop()
+            except Exception as e:
+                logger.error(f"Error stopping PWM: {e}")
+        pwm_instances.clear()
+        GPIO.cleanup()
+        logger.info("GPIO cleaned up")
+    except Exception as e:
+        logger.error(f"Error during GPIO cleanup: {e}")
+
+# Helper function for thread-safe GPIO operations
+def run_in_thread(func, *args, **kwargs):
+    """Run blocking function in thread executor"""
+    loop = asyncio.get_event_loop()
+    return loop.run_in_executor(executor, func, *args, **kwargs)
 
 # Pin configuration endpoints
 @app.post("/pin/configure")
@@ -83,6 +106,11 @@ async def configure_pin(config: PinConfig):
     """Configure a GPIO pin as input or output"""
     try:
         pin = config.pin
+        
+        # Cleanup existing PWM if present
+        if pin in pwm_instances:
+            pwm_instances[pin].stop()
+            del pwm_instances[pin]
         
         if config.mode.lower() == "output":
             GPIO.setup(pin, GPIO.OUT)
@@ -108,6 +136,7 @@ async def configure_pin(config: PinConfig):
         return {"message": f"Pin {pin} configured successfully", "config": pin_states[pin]}
     
     except Exception as e:
+        logger.error(f"Error configuring pin {config.pin}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/pin/{pin}/status")
@@ -118,10 +147,11 @@ async def get_pin_status(pin: int):
             raise HTTPException(status_code=404, detail="Pin not configured")
         
         status = pin_states[pin].copy()
-        if status["mode"] == "input":
+        try:
             status["current_value"] = GPIO.input(pin)
-        elif status["mode"] == "output":
-            status["current_value"] = GPIO.input(pin)
+        except Exception as e:
+            logger.error(f"Error reading pin {pin}: {e}")
+            status["current_value"] = None
         
         if pin in pwm_instances:
             status["pwm_active"] = True
@@ -148,6 +178,7 @@ async def digital_write(data: DigitalWrite):
         return {"message": f"Pin {pin} set to {'HIGH' if data.state else 'LOW'}"}
     
     except Exception as e:
+        logger.error(f"Error writing to pin {data.pin}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/digital/read/{pin}")
@@ -161,6 +192,7 @@ async def digital_read(pin: int):
         return {"pin": pin, "value": value, "state": "HIGH" if value else "LOW"}
     
     except Exception as e:
+        logger.error(f"Error reading pin {pin}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # PWM control endpoints
@@ -173,8 +205,10 @@ async def start_pwm(config: PWMConfig):
         if pin not in pin_states or pin_states[pin]["mode"] != "output":
             raise HTTPException(status_code=400, detail="Pin must be configured as output")
         
+        # Stop existing PWM if present
         if pin in pwm_instances:
             pwm_instances[pin].stop()
+            del pwm_instances[pin]
         
         pwm = GPIO.PWM(pin, config.frequency)
         pwm.start(config.duty_cycle)
@@ -189,6 +223,7 @@ async def start_pwm(config: PWMConfig):
         return {"message": f"PWM started on pin {pin}", "config": config.dict()}
     
     except Exception as e:
+        logger.error(f"Error starting PWM on pin {config.pin}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/pwm/update")
@@ -201,12 +236,14 @@ async def update_pwm_duty_cycle(data: PWMUpdate):
             raise HTTPException(status_code=404, detail="PWM not active on this pin")
         
         pwm_instances[pin].ChangeDutyCycle(data.duty_cycle)
-        pin_states[pin]["pwm"]["duty_cycle"] = data.duty_cycle
+        if pin in pin_states and "pwm" in pin_states[pin]:
+            pin_states[pin]["pwm"]["duty_cycle"] = data.duty_cycle
         
         logger.info(f"PWM duty cycle updated on pin {pin}: {data.duty_cycle}%")
         return {"message": f"PWM duty cycle updated on pin {pin}", "duty_cycle": data.duty_cycle}
     
     except Exception as e:
+        logger.error(f"Error updating PWM on pin {data.pin}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/pwm/stop/{pin}")
@@ -219,13 +256,14 @@ async def stop_pwm(pin: int):
         pwm_instances[pin].stop()
         del pwm_instances[pin]
         
-        if "pwm" in pin_states[pin]:
+        if pin in pin_states and "pwm" in pin_states[pin]:
             del pin_states[pin]["pwm"]
         
         logger.info(f"PWM stopped on pin {pin}")
         return {"message": f"PWM stopped on pin {pin}"}
     
     except Exception as e:
+        logger.error(f"Error stopping PWM on pin {pin}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Bulk operations
@@ -238,17 +276,23 @@ async def get_all_pins():
 async def cleanup_all_pins():
     """Stop all PWM and cleanup GPIO"""
     try:
-        for pwm in pwm_instances.values():
-            pwm.stop()
+        for pin, pwm in list(pwm_instances.items()):
+            try:
+                pwm.stop()
+            except Exception as e:
+                logger.error(f"Error stopping PWM on pin {pin}: {e}")
+        
         pwm_instances.clear()
         pin_states.clear()
         GPIO.cleanup()
         GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
         
         logger.info("All pins cleaned up")
         return {"message": "All pins cleaned up successfully"}
     
     except Exception as e:
+        logger.error(f"Error during cleanup: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Predefined pin shortcuts
@@ -311,18 +355,27 @@ async def set_predefined_pin_low(pin_name: str):
     pin = AVAILABLE_PINS[pin_name]
     return await digital_write(DigitalWrite(pin=pin, state=False))
 
+# Motor initialization helper
+async def ensure_motor_pins_configured():
+    """Ensure all motor pins are configured as outputs"""
+    motor_pins = ["ENA", "ENB", "IN1", "IN2", "IN3", "IN4"]
+    for pin_name in motor_pins:
+        pin = AVAILABLE_PINS[pin_name]
+        if pin not in pin_states:
+            try:
+                GPIO.setup(pin, GPIO.OUT)
+                GPIO.output(pin, GPIO.LOW)  # Start with motors off
+                pin_states[pin] = {"mode": "output", "state": False}
+            except Exception as e:
+                logger.error(f"Error configuring motor pin {pin_name}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to configure motor pin {pin_name}")
+
 # Tank drive control endpoints
 @app.post("/motor/tank")
 async def tank_drive(command: TankDriveCommand):
     """Control both motors independently (tank drive)"""
     try:
-        # Configure motor pins if not already configured
-        motor_pins = ["ENA", "ENB", "IN1", "IN2", "IN3", "IN4"]
-        for pin_name in motor_pins:
-            pin = AVAILABLE_PINS[pin_name]
-            if pin not in pin_states:
-                GPIO.setup(pin, GPIO.OUT)
-                pin_states[pin] = {"mode": "output", "state": False}
+        await ensure_motor_pins_configured()
         
         # Left motor control
         left_speed = abs(command.left_speed)
@@ -357,18 +410,22 @@ async def tank_drive(command: TankDriveCommand):
         # Set PWM speeds
         for pin_name, speed in [("ENA", left_speed), ("ENB", right_speed)]:
             pin = AVAILABLE_PINS[pin_name]
-            if pin in pwm_instances:
-                pwm_instances[pin].ChangeDutyCycle(speed)
-            else:
-                pwm = GPIO.PWM(pin, 1000)  # 1kHz frequency
-                pwm.start(speed)
-                pwm_instances[pin] = pwm
-                pin_states[pin]["pwm"] = {"frequency": 1000, "duty_cycle": speed}
+            try:
+                if pin in pwm_instances:
+                    pwm_instances[pin].ChangeDutyCycle(speed)
+                else:
+                    pwm = GPIO.PWM(pin, 1000)  # 1kHz frequency
+                    pwm.start(speed)
+                    pwm_instances[pin] = pwm
+                    pin_states[pin]["pwm"] = {"frequency": 1000, "duty_cycle": speed}
+            except Exception as e:
+                logger.error(f"Error setting PWM for {pin_name}: {e}")
         
         logger.info(f"Tank drive: Left={command.left_speed}%, Right={command.right_speed}%")
         return {"message": "Tank drive command executed", "left_speed": command.left_speed, "right_speed": command.right_speed}
     
     except Exception as e:
+        logger.error(f"Error in tank drive: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/motor/forward")
@@ -414,38 +471,87 @@ async def get_motor_status():
         for motor in ["ENA", "ENB", "IN1", "IN2", "IN3", "IN4"]:
             pin = AVAILABLE_PINS[motor]
             if pin in pin_states:
-                status[motor] = {
-                    "pin": pin,
-                    "state": pin_states[pin].get("state", False),
-                    "current_value": GPIO.input(pin)
-                }
-                if pin in pwm_instances:
-                    status[motor]["pwm"] = pin_states[pin].get("pwm", {})
+                try:
+                    status[motor] = {
+                        "pin": pin,
+                        "state": pin_states[pin].get("state", False),
+                        "current_value": GPIO.input(pin)
+                    }
+                    if pin in pwm_instances:
+                        status[motor]["pwm"] = pin_states[pin].get("pwm", {})
+                except Exception as e:
+                    logger.error(f"Error reading motor pin {motor}: {e}")
+                    status[motor] = {"pin": pin, "error": str(e)}
         
         return {"motor_status": status}
     
     except Exception as e:
+        logger.error(f"Error getting motor status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Camera streaming functions
+def capture_frame(cap):
+    """Capture a frame from camera (blocking operation)"""
+    ret, frame = cap.read()
+    if not ret:
+        return None
+    _, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+    return jpeg.tobytes()
 
 @app.websocket("/ws/camera")
 async def webcam_stream(websocket: WebSocket):
     """WebSocket endpoint to stream webcam footage as JPEG frames."""
     await websocket.accept()
-    cap = cv2.VideoCapture(0)  # 0 is the default camera
+    cap = None
+    
     try:
+        # Initialize camera
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            await websocket.send_text("Camera initialization failed")
+            return
+        
+        # Set camera properties for better performance
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        
+        logger.info("Camera stream started")
+        
         while True:
-            ret, frame = cap.read()
-            if not ret:
-                await websocket.send_text("Camera error")
+            # Capture frame in thread to avoid blocking
+            frame_data = await run_in_thread(capture_frame, cap)
+            
+            if frame_data is None:
+                await websocket.send_text("Camera read error")
                 break
-            # Encode frame as JPEG
-            _, jpeg = cv2.imencode('.jpg', frame)
-            await websocket.send_bytes(jpeg.tobytes())
+            
+            await websocket.send_bytes(frame_data)
+            
+            # Small delay to prevent overwhelming the connection
+            await asyncio.sleep(0.033)  # ~30 FPS
+            
     except WebSocketDisconnect:
-        pass
+        logger.info("Camera stream client disconnected")
+    except Exception as e:
+        logger.error(f"Camera stream error: {e}")
+        try:
+            await websocket.send_text(f"Camera error: {str(e)}")
+        except:
+            pass
     finally:
-        cap.release()
-        await websocket.close()
+        if cap:
+            cap.release()
+        try:
+            await websocket.close()
+        except:
+            pass
+        logger.info("Camera stream ended")
+
+@app.get("/")
+async def root():
+    """Health check endpoint"""
+    return {"message": "GPIO Controller API running", "status": "healthy"}
 
 if __name__ == "__main__":
     import uvicorn
