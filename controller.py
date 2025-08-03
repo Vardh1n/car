@@ -10,12 +10,39 @@ import time
 # Add this import:
 from ir import ir_stream
 from starlette.responses import StreamingResponse
+from contextlib import asynccontextmanager
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Tank Car Controller", description="Simple tank drive car control system")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global car, global_camera
+    try:
+        car = TankCar()
+        logger.info("Tank car initialized")
+        global_camera = cv2.VideoCapture(0)
+        if global_camera.isOpened():
+            global_camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            global_camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            global_camera.set(cv2.CAP_PROP_FPS, 30)
+            global_camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            logger.info("Camera initialized")
+        else:
+            logger.warning("Camera initialization failed")
+        yield
+    finally:
+        try:
+            if car:
+                car.cleanup()
+            if global_camera:
+                global_camera.release()
+            logger.info("Car and camera cleaned up")
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+
+app = FastAPI(title="Tank Car Controller", description="Simple tank drive car control system", lifespan=lifespan)
 
 # CORS middleware
 app.add_middleware(
@@ -311,3 +338,7 @@ async def stream_ir():
         for value in ir_stream(fps=30):
             yield f"data: {value}\n\n"
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
