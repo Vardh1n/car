@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class TankCarClient:
-    def __init__(self, server_url: str = "ws://localhost:8000", frontend_port: int = 8001):
+    def __init__(self, server_url: str = "ws://10.116.163.140:8000", frontend_port: int = 8001):
         self.server_url = server_url
         self.http_url = server_url.replace("ws://", "http://")
         self.frontend_port = frontend_port
@@ -44,65 +44,93 @@ class TankCarClient:
         self.movement_active = False
         self.movement_task = None
         
+        # IR sensor state
+        self.ir_value = None
+        self.ir_connected = False
+        
     async def connect_camera_stream(self):
         """Connect to camera WebSocket stream"""
-        try:
-            uri = f"{self.server_url}/ws/camera"
-            self.camera_ws = await websockets.connect(uri)
-            logger.info("Connected to camera stream")
-            
-            while self.is_running:
-                try:
-                    # Receive frame data
-                    frame_data = await self.camera_ws.recv()
-                    
-                    if isinstance(frame_data, str):
-                        logger.warning(f"Camera message: {frame_data}")
-                        continue
-                    
-                    # Decode frame
-                    nparr = np.frombuffer(frame_data, np.uint8)
-                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                    
-                    if frame is not None:
-                        self.current_frame = frame
+        while self.is_running:
+            try:
+                uri = f"{self.server_url}/ws/camera"
+                self.camera_ws = await websockets.connect(uri)
+                logger.info("Connected to camera stream")
+                
+                while self.is_running:
+                    try:
+                        # Receive frame data
+                        frame_data = await asyncio.wait_for(self.camera_ws.recv(), timeout=5.0)
                         
-                        # Process with YOLO if enabled
-                        if self.detection_enabled:
-                            await self.process_frame(frame)
-                        else:
-                            self.processed_frame = frame
+                        if isinstance(frame_data, str):
+                            logger.warning(f"Camera message: {frame_data}")
+                            continue
                         
-                        # Check for auto-movement
-                        if self.auto_movement_enabled and not self.movement_active:
-                            await self.check_auto_movement()
+                        # Decode frame
+                        nparr = np.frombuffer(frame_data, np.uint8)
+                        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                         
-                        # Send to frontend clients
-                        await self.broadcast_frame()
+                        if frame is not None:
+                            self.current_frame = frame
                             
-                except websockets.exceptions.ConnectionClosed:
-                    logger.info("Camera stream connection closed")
+                            # Process with YOLO if enabled
+                            if self.detection_enabled:
+                                await self.process_frame(frame)
+                            else:
+                                self.processed_frame = frame
+                            
+                            # Check for auto-movement
+                            if self.auto_movement_enabled and not self.movement_active:
+                                await self.check_auto_movement()
+                            
+                            # Send to frontend clients
+                            await self.broadcast_frame()
+                                
+                    except asyncio.TimeoutError:
+                        logger.warning("Camera stream timeout")
+                        continue
+                    except websockets.exceptions.ConnectionClosed:
+                        logger.info("Camera stream connection closed")
+                        break
+                    except Exception as e:
+                        logger.error(f"Camera stream error: {e}")
+                        await asyncio.sleep(0.1)
+                        
+            except Exception as e:
+                logger.error(f"Failed to connect to camera stream: {e}")
+                if self.is_running:
+                    logger.info("Retrying camera connection in 5 seconds...")
+                    await asyncio.sleep(5)
+                else:
                     break
-                except Exception as e:
-                    logger.error(f"Camera stream error: {e}")
-                    await asyncio.sleep(0.1)
-                    
-        except Exception as e:
-            logger.error(f"Failed to connect to camera stream: {e}")
     
     async def connect_control_stream(self):
         """Connect to control WebSocket"""
-        try:
-            uri = f"{self.server_url}/ws/control"
-            self.control_ws = await websockets.connect(uri)
-            logger.info("Connected to control stream")
-            
-            # Keep connection alive
-            while self.is_running:
-                await asyncio.sleep(1)
+        while self.is_running:
+            try:
+                uri = f"{self.server_url}/ws/control"
+                self.control_ws = await websockets.connect(uri)
+                logger.info("Connected to control stream")
                 
-        except Exception as e:
-            logger.error(f"Failed to connect to control stream: {e}")
+                # Keep connection alive
+                while self.is_running:
+                    try:
+                        await asyncio.sleep(1)
+                        # Send ping to keep connection alive
+                        await self.control_ws.ping()
+                    except websockets.exceptions.ConnectionClosed:
+                        logger.info("Control stream connection closed")
+                        break
+                    except Exception as e:
+                        logger.error(f"Control stream keep-alive error: {e}")
+                        break
+                        
+            except Exception as e:
+                logger.error(f"Failed to connect to control stream: {e}")
+                if self.is_running:
+                    logger.info("Retrying control connection in 5 seconds...")
+                    await asyncio.sleep(5)
+                else:
+                    break
     
     async def process_frame(self, frame):
         """Process frame with YOLOv8"""
@@ -259,7 +287,7 @@ class TankCarClient:
             await self.control_ws.send(json.dumps(command_data))
             
             # Wait for response
-            response = await asyncio.wait_for(self.control_ws.recv(), timeout=1.0)
+            response = await asyncio.wait_for(self.control_ws.recv(), timeout=2.0)
             response_data = json.loads(response)
             
             if response_data.get("status") == "ok":
@@ -269,6 +297,9 @@ class TankCarClient:
                 logger.warning(f"Command failed: {response_data}")
                 return False
                 
+        except asyncio.TimeoutError:
+            logger.warning(f"Control command timeout: {command}")
+            return False
         except Exception as e:
             logger.error(f"Control command error: {e}")
             return False
@@ -376,20 +407,45 @@ class TankCarClient:
     
     async def connect_ir_stream(self):
         """Connect to IR sensor SSE stream and broadcast values to frontend clients."""
-        url = f"{self.http_url}/ir/stream"
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        logger.error(f"Failed to connect to IR stream: {resp.status}")
-                        return
-                    logger.info("Connected to IR stream")
-                    async for line in resp.content:
-                        if line.startswith(b"data:"):
-                            value = line.decode().strip().split("data:")[1]
-                            await self.broadcast_ir_value(value)
-        except Exception as e:
-            logger.error(f"IR stream error: {e}")
+        while self.is_running:
+            try:
+                url = f"{self.http_url}/ir/stream"
+                timeout = aiohttp.ClientTimeout(total=None, connect=10)
+                
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(url) as resp:
+                        if resp.status != 200:
+                            logger.error(f"Failed to connect to IR stream: {resp.status}")
+                            await asyncio.sleep(5)
+                            continue
+                            
+                        logger.info("Connected to IR stream")
+                        self.ir_connected = True
+                        
+                        async for line in resp.content:
+                            if not self.is_running:
+                                break
+                                
+                            line_str = line.decode().strip()
+                            if line_str.startswith("data:"):
+                                try:
+                                    value = line_str.split("data:")[1].strip()
+                                    self.ir_value = value
+                                    await self.broadcast_ir_value(value)
+                                except (IndexError, ValueError) as e:
+                                    logger.warning(f"Invalid IR data format: {line_str}")
+                                    
+            except asyncio.CancelledError:
+                logger.info("IR stream task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"IR stream error: {e}")
+                self.ir_connected = False
+                if self.is_running:
+                    logger.info("Retrying IR connection in 10 seconds...")
+                    await asyncio.sleep(10)
+                else:
+                    break
 
     async def broadcast_ir_value(self, value):
         """Broadcast IR sensor value to frontend clients."""
@@ -413,19 +469,34 @@ class TankCarClient:
 
         # Start frontend server
         frontend_server = await self.start_frontend_server()
+        if not frontend_server:
+            logger.error("Failed to start frontend server, exiting...")
+            return
 
-        # Start connections
+        # Create tasks for each connection
         camera_task = asyncio.create_task(self.connect_camera_stream())
         control_task = asyncio.create_task(self.connect_control_stream())
-        ir_task = asyncio.create_task(self.connect_ir_stream())  # Add IR stream task
+        ir_task = asyncio.create_task(self.connect_ir_stream())
 
         try:
-            # Wait for tasks
-            await asyncio.gather(camera_task, control_task, ir_task)
+            # Run all tasks concurrently, but don't let one failure stop others
+            await asyncio.gather(
+                camera_task, 
+                control_task, 
+                ir_task,
+                return_exceptions=True  # This prevents one task failure from stopping others
+            )
         except KeyboardInterrupt:
             logger.info("Shutting down...")
         finally:
             self.is_running = False
+            
+            # Cancel all tasks
+            for task in [camera_task, control_task, ir_task]:
+                if not task.done():
+                    task.cancel()
+            
+            # Clean up connections
             if self.camera_ws:
                 await self.camera_ws.close()
             if self.control_ws:
@@ -435,8 +506,8 @@ class TankCarClient:
                 await frontend_server.wait_closed()
 
 async def main():
-    # You can change the server URL and frontend port here
-    client = TankCarClient("ws://localhost:8000", 8001)
+    # Use your server's IP address
+    client = TankCarClient("ws://10.116.163.140:8000", 8001)
     await client.run()
 
 if __name__ == "__main__":

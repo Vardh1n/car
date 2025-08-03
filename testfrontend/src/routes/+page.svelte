@@ -1,7 +1,13 @@
+<script context="module">
+  export const ssr = false;
+</script>
+
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { writable } from 'svelte/store';
+  import { browser } from '$app/environment';
   import "./style.css";
+  
   // WebSocket connection
   let ws = null;
   let connectionStatus = 'Disconnected';
@@ -28,22 +34,29 @@
   // Reactive stores
   const isConnected = writable(false);
 
-  let irValue = null; // Add this line
+  let irValue = null;
+  let irConnected = false;
 
   onMount(() => {
-    connectToBackend();
-    setupKeyboardControls();
+    if (browser) {
+      connectToBackend();
+      setupKeyboardControls();
+    }
   });
 
   onDestroy(() => {
     if (ws) {
       ws.close();
     }
-    document.removeEventListener('keydown', handleKeyDown);
-    document.removeEventListener('keyup', handleKeyUp);
+    if (browser && typeof document !== 'undefined') {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('keyup', handleKeyUp);
+    }
   });
 
   function connectToBackend() {
+    if (!browser) return;
+    
     try {
       ws = new WebSocket('ws://localhost:8001');
       
@@ -68,6 +81,7 @@
       ws.onclose = () => {
         connectionStatus = 'Disconnected';
         isConnected.set(false);
+        irConnected = false;
         console.log('Disconnected from backend');
         
         // Attempt to reconnect after 3 seconds
@@ -77,6 +91,7 @@
       ws.onerror = (error) => {
         console.error('WebSocket error:', error);
         connectionStatus = 'Error';
+        irConnected = false;
       };
     } catch (error) {
       console.error('Failed to connect:', error);
@@ -128,6 +143,7 @@
       
       case 'ir':
         irValue = data.value;
+        irConnected = true;
         break;
 
       default:
@@ -188,6 +204,8 @@
   }
 
   function setupKeyboardControls() {
+    if (!browser || typeof document === 'undefined') return;
+    
     document.addEventListener('keydown', handleKeyDown);
     document.addEventListener('keyup', handleKeyUp);
   }
@@ -258,14 +276,22 @@
   <!-- IR Sensor Value -->
   <div class="ir-panel">
     <h3>IR Sensor</h3>
-    <p>
-      Value: 
-      {#if irValue !== null}
-        <span class="ir-value">{irValue}</span>
-      {:else}
-        <span class="ir-value">No data</span>
-      {/if}
-    </p>
+    <div class="ir-content">
+      <p>
+        Status: 
+        <span class="ir-status" class:connected={irConnected} class:disconnected={!irConnected}>
+          {irConnected ? 'Connected' : 'Disconnected'}
+        </span>
+      </p>
+      <p>
+        Value: 
+        {#if irValue !== null}
+          <span class="ir-value">{irValue}</span>
+        {:else}
+          <span class="ir-value no-data">No data</span>
+        {/if}
+      </p>
+    </div>
   </div>
 
   <!-- Video Feed -->
@@ -457,14 +483,70 @@
 
 <style>
   .ir-panel {
-  margin: 1em 0;
-  padding: 0.5em 1em;
-  background: #f7f7f7;
-  border-radius: 6px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-}
-.ir-value {
-  font-weight: bold;
-  color: #007bff;
-}
+    margin: 1em 0;
+    padding: 1em;
+    background: #f7f7f7;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    border: 1px solid #e0e0e0;
+  }
+  
+  .ir-panel h3 {
+    margin: 0 0 0.5em 0;
+    color: #333;
+    font-size: 1.1em;
+  }
+  
+  .ir-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3em;
+  }
+  
+  .ir-content p {
+    margin: 0;
+    font-size: 0.95em;
+  }
+  
+  .ir-status {
+    font-weight: bold;
+    padding: 0.2em 0.5em;
+    border-radius: 4px;
+    font-size: 0.8em;
+  }
+  
+  .ir-status.connected {
+    background: #d4edda;
+    color: #155724;
+  }
+  
+  .ir-status.disconnected {
+    background: #f8d7da;
+    color: #721c24;
+  }
+  
+  .ir-value {
+    font-weight: bold;
+    color: #007bff;
+    font-family: 'Courier New', monospace;
+    background: #e9f4ff;
+    padding: 0.2em 0.5em;
+    border-radius: 4px;
+    display: inline-block;
+  }
+  
+  .ir-value.no-data {
+    color: #6c757d;
+    background: #f8f9fa;
+  }
+  
+  @media (max-width: 768px) {
+    .ir-panel {
+      padding: 0.8em;
+    }
+    
+    .ir-content {
+      flex-direction: column;
+    }
+  }
 </style>

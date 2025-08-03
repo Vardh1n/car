@@ -7,42 +7,83 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from car import TankCar
 import time
-# Add this import:
-from ir import ir_stream
 from starlette.responses import StreamingResponse
 from contextlib import asynccontextmanager
+
+# Try to import ir module, handle if it doesn't exist
+try:
+    from ir import ir_stream
+    IR_AVAILABLE = True
+except ImportError:
+    IR_AVAILABLE = False
+    logging.warning("IR module not available")
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Global variables
+car: TankCar = None
+global_camera = None
+camera_lock = asyncio.Lock()
+executor = ThreadPoolExecutor(max_workers=4)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Manage application lifespan - startup and shutdown"""
     global car, global_camera
+    
+    # Startup
     try:
+        # Initialize car
         car = TankCar()
         logger.info("Tank car initialized")
+        
+        # Initialize camera
         global_camera = cv2.VideoCapture(0)
         if global_camera.isOpened():
             global_camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             global_camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             global_camera.set(cv2.CAP_PROP_FPS, 30)
             global_camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            logger.info("Camera initialized")
+            logger.info("Camera initialized successfully")
         else:
             logger.warning("Camera initialization failed")
-        yield
-    finally:
-        try:
-            if car:
-                car.cleanup()
-            if global_camera:
-                global_camera.release()
-            logger.info("Car and camera cleaned up")
-        except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
+            global_camera = None
+            
+    except Exception as e:
+        logger.error(f"Failed to initialize resources: {e}")
+        # Don't raise here, let the app start but with limited functionality
+    
+    yield
+    
+    # Shutdown
+    try:
+        if car:
+            car.stop()  # Stop car before cleanup
+            car.cleanup()
+            logger.info("Car cleaned up")
+    except Exception as e:
+        logger.error(f"Error cleaning up car: {e}")
+    
+    try:
+        if global_camera:
+            global_camera.release()
+            logger.info("Camera released")
+    except Exception as e:
+        logger.error(f"Error releasing camera: {e}")
+    
+    try:
+        executor.shutdown(wait=True)
+        logger.info("Executor shutdown")
+    except Exception as e:
+        logger.error(f"Error shutting down executor: {e}")
 
-app = FastAPI(title="Tank Car Controller", description="Simple tank drive car control system", lifespan=lifespan)
+app = FastAPI(
+    title="Tank Car Controller", 
+    description="Simple tank drive car control system", 
+    lifespan=lifespan
+)
 
 # CORS middleware
 app.add_middleware(
@@ -53,16 +94,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global car instance
-car: TankCar = None
-
-# Thread executor for blocking operations
-executor = ThreadPoolExecutor(max_workers=4)
-
-# Global camera instance for sharing across connections
-global_camera = None
-camera_lock = asyncio.Lock()
-
 # Pydantic models
 class TankDriveCommand(BaseModel):
     left_speed: float = Field(..., ge=-100, le=100, description="Left motor speed (-100 to 100)")
@@ -71,52 +102,25 @@ class TankDriveCommand(BaseModel):
 class DirectionalCommand(BaseModel):
     speed: float = Field(50, ge=0, le=100, description="Motor speed (0-100%)")
 
-# Initialize car
-@app.on_event("startup")
-async def startup_event():
-    global car, global_camera
-    try:
-        car = TankCar()
-        logger.info("Tank car initialized")
-        
-        # Initialize shared camera
-        global_camera = cv2.VideoCapture(0)
-        if global_camera.isOpened():
-            global_camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            global_camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            global_camera.set(cv2.CAP_PROP_FPS, 30)
-            global_camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer for lower latency
-            logger.info("Camera initialized")
-        else:
-            logger.warning("Camera initialization failed")
-            
-    except Exception as e:
-        logger.error(f"Failed to initialize car: {e}")
-        raise
+# Helper function to check if car is available
+def check_car_available():
+    if car is None:
+        raise HTTPException(status_code=503, detail="Car not initialized")
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    global car, global_camera
-    try:
-        if car:
-            car.cleanup()
-        if global_camera:
-            global_camera.release()
-        logger.info("Car and camera cleaned up")
-    except Exception as e:
-        logger.error(f"Error during cleanup: {e}")
-
-# Car control endpoints - these should be instant
+# Car control endpoints
 @app.post("/car/move")
 async def move_car(command: TankDriveCommand):
     """Control both motors independently (tank drive)"""
     try:
+        check_car_available()
         car.move(command.left_speed, command.right_speed)
         return {
             "message": "Car move command executed", 
             "left_speed": command.left_speed, 
             "right_speed": command.right_speed
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error moving car: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -125,8 +129,11 @@ async def move_car(command: TankDriveCommand):
 async def move_forward(command: DirectionalCommand = DirectionalCommand()):
     """Move forward at specified speed"""
     try:
+        check_car_available()
         car.forward(command.speed)
         return {"message": f"Moving forward at {command.speed}% speed"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error moving forward: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -135,8 +142,11 @@ async def move_forward(command: DirectionalCommand = DirectionalCommand()):
 async def move_backward(command: DirectionalCommand = DirectionalCommand()):
     """Move backward at specified speed"""
     try:
+        check_car_available()
         car.backward(command.speed)
         return {"message": f"Moving backward at {command.speed}% speed"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error moving backward: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -145,8 +155,11 @@ async def move_backward(command: DirectionalCommand = DirectionalCommand()):
 async def turn_left(command: DirectionalCommand = DirectionalCommand()):
     """Turn left (spin in place)"""
     try:
+        check_car_available()
         car.turn_left(command.speed)
         return {"message": f"Turning left at {command.speed}% speed"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error turning left: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -155,8 +168,11 @@ async def turn_left(command: DirectionalCommand = DirectionalCommand()):
 async def turn_right(command: DirectionalCommand = DirectionalCommand()):
     """Turn right (spin in place)"""
     try:
+        check_car_available()
         car.turn_right(command.speed)
         return {"message": f"Turning right at {command.speed}% speed"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error turning right: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -165,8 +181,11 @@ async def turn_right(command: DirectionalCommand = DirectionalCommand()):
 async def pivot_left(command: DirectionalCommand = DirectionalCommand()):
     """Pivot left (only right motor moves)"""
     try:
+        check_car_available()
         car.pivot_left(command.speed)
         return {"message": f"Pivoting left at {command.speed}% speed"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error pivoting left: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -175,37 +194,51 @@ async def pivot_left(command: DirectionalCommand = DirectionalCommand()):
 async def pivot_right(command: DirectionalCommand = DirectionalCommand()):
     """Pivot right (only left motor moves)"""
     try:
+        check_car_available()
         car.pivot_right(command.speed)
         return {"message": f"Pivoting right at {command.speed}% speed"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error pivoting right: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/car/stop")
 async def stop_car():
-    """Stop the car - INSTANT RESPONSE"""
+    """Stop the car"""
     try:
+        check_car_available()
         car.stop()
         return {"message": "Car stopped"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error stopping car: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Optimized camera streaming functions
+# Camera functions
 async def capture_frame_async():
     """Capture a frame from camera in thread pool"""
     if not global_camera or not global_camera.isOpened():
         return None
     
     def _capture():
-        ret, frame = global_camera.read()
-        if not ret:
+        try:
+            ret, frame = global_camera.read()
+            if not ret or frame is None:
+                return None
+            # Use lower quality for faster encoding
+            _, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+            return jpeg.tobytes()
+        except Exception as e:
+            logger.error(f"Frame encoding error: {e}")
             return None
-        # Use lower quality for faster encoding
-        _, jpeg = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-        return jpeg.tobytes()
     
-    return await asyncio.get_event_loop().run_in_executor(executor, _capture)
+    try:
+        return await asyncio.get_event_loop().run_in_executor(executor, _capture)
+    except Exception as e:
+        logger.error(f"Frame capture async error: {e}")
+        return None
 
 @app.websocket("/ws/camera")
 async def webcam_stream(websocket: WebSocket):
@@ -220,16 +253,24 @@ async def webcam_stream(websocket: WebSocket):
         logger.info("Camera stream started")
         frame_count = 0
         last_fps_time = time.time()
+        consecutive_errors = 0
+        max_consecutive_errors = 10
         
         while True:
             try:
-                # Capture frame asynchronously to not block other operations
-                frame_data = await capture_frame_async()
+                # Use camera lock to prevent conflicts
+                async with camera_lock:
+                    frame_data = await capture_frame_async()
                 
                 if frame_data is None:
-                    await websocket.send_text("Camera read error")
-                    await asyncio.sleep(0.1)  # Brief pause before retry
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        await websocket.send_text("Too many camera errors, stopping stream")
+                        break
+                    await asyncio.sleep(0.1)
                     continue
+                
+                consecutive_errors = 0  # Reset error counter
                 
                 # Send frame
                 await websocket.send_bytes(frame_data)
@@ -242,13 +283,18 @@ async def webcam_stream(websocket: WebSocket):
                     logger.info(f"Camera FPS: {fps:.1f}")
                     last_fps_time = current_time
                 
-                # Minimal delay to maintain ~30 FPS but allow other operations
-                await asyncio.sleep(0.025)  # ~40 FPS max, but yields control frequently
+                # Control frame rate
+                await asyncio.sleep(0.033)  # ~30 FPS
                 
             except asyncio.CancelledError:
                 break
+            except WebSocketDisconnect:
+                break
             except Exception as e:
-                logger.error(f"Frame capture error: {e}")
+                logger.error(f"Frame streaming error: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    break
                 await asyncio.sleep(0.1)
                 
     except WebSocketDisconnect:
@@ -262,23 +308,31 @@ async def webcam_stream(websocket: WebSocket):
     finally:
         logger.info("Camera stream ended")
 
-# WebSocket for real-time car control
 @app.websocket("/ws/control")
 async def car_control_websocket(websocket: WebSocket):
     """WebSocket for real-time car control commands"""
     await websocket.accept()
     
     try:
+        if car is None:
+            await websocket.send_json({"error": "Car not initialized"})
+            return
+        
         logger.info("Car control WebSocket connected")
         
         while True:
-            # Wait for command
-            data = await websocket.receive_json()
-            command = data.get("command")
-            speed = data.get("speed", 50)
-            
-            # Execute command immediately
             try:
+                # Wait for command with timeout
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=30.0)
+                command = data.get("command")
+                speed = data.get("speed", 50)
+                
+                # Validate speed
+                if not isinstance(speed, (int, float)) or speed < 0 or speed > 100:
+                    await websocket.send_json({"error": "Invalid speed value"})
+                    continue
+                
+                # Execute command immediately
                 if command == "forward":
                     car.forward(speed)
                 elif command == "backward":
@@ -296,32 +350,53 @@ async def car_control_websocket(websocket: WebSocket):
                 elif command == "move":
                     left_speed = data.get("left_speed", 0)
                     right_speed = data.get("right_speed", 0)
+                    # Validate motor speeds
+                    if not all(isinstance(s, (int, float)) and -100 <= s <= 100 
+                              for s in [left_speed, right_speed]):
+                        await websocket.send_json({"error": "Invalid motor speed values"})
+                        continue
                     car.move(left_speed, right_speed)
                 else:
                     await websocket.send_json({"error": f"Unknown command: {command}"})
                     continue
                 
                 # Send confirmation
-                await websocket.send_json({"status": "ok", "command": command, "speed": speed})
+                await websocket.send_json({
+                    "status": "ok", 
+                    "command": command, 
+                    "speed": speed,
+                    "timestamp": time.time()
+                })
                 
+            except asyncio.TimeoutError:
+                # Send heartbeat
+                await websocket.send_json({"status": "heartbeat"})
             except Exception as e:
                 logger.error(f"Command execution error: {e}")
                 await websocket.send_json({"error": str(e)})
                 
     except WebSocketDisconnect:
         logger.info("Car control WebSocket disconnected")
-        # Stop car when client disconnects for safety
-        try:
-            car.stop()
-        except:
-            pass
     except Exception as e:
         logger.error(f"Car control WebSocket error: {e}")
+    finally:
+        # Stop car when client disconnects for safety
+        try:
+            if car:
+                car.stop()
+        except Exception as e:
+            logger.error(f"Error stopping car on disconnect: {e}")
 
 @app.get("/")
 async def root():
     """Health check endpoint"""
-    return {"message": "Tank Car Controller API running", "status": "healthy"}
+    return {
+        "message": "Tank Car Controller API running", 
+        "status": "healthy",
+        "car_available": car is not None,
+        "camera_available": global_camera is not None and global_camera.isOpened(),
+        "ir_available": IR_AVAILABLE
+    }
 
 @app.get("/camera/status")
 async def camera_status():
@@ -334,11 +409,19 @@ async def camera_status():
 @app.get("/ir/stream")
 async def stream_ir():
     """Stream IR sensor value at 30 FPS as server-sent events."""
+    if not IR_AVAILABLE:
+        raise HTTPException(status_code=503, detail="IR sensor not available")
+    
     def event_stream():
-        for value in ir_stream(fps=30):
-            yield f"data: {value}\n\n"
+        try:
+            for value in ir_stream(fps=30):
+                yield f"data: {value}\n\n"
+        except Exception as e:
+            logger.error(f"IR stream error: {e}")
+            yield f"data: error:{str(e)}\n\n"
+    
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
