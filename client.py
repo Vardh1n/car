@@ -410,30 +410,41 @@ class TankCarClient:
         while self.is_running:
             try:
                 url = f"{self.http_url}/ir/stream"
+                logger.info(f"Connecting to IR stream: {url}")
                 timeout = aiohttp.ClientTimeout(total=None, connect=10)
                 
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.get(url) as resp:
                         if resp.status != 200:
                             logger.error(f"Failed to connect to IR stream: {resp.status}")
+                            logger.error(f"Response: {await resp.text()}")
                             await asyncio.sleep(5)
                             continue
                             
-                        logger.info("Connected to IR stream")
+                        logger.info("Connected to IR stream successfully")
                         self.ir_connected = True
+                        line_count = 0
                         
                         async for line in resp.content:
                             if not self.is_running:
                                 break
                                 
                             line_str = line.decode().strip()
+                            line_count += 1
+                            
+                            if line_count % 30 == 0:  # Log every second
+                                logger.info(f"IR stream: received {line_count} lines")
+                            
                             if line_str.startswith("data:"):
                                 try:
                                     value = line_str.split("data:")[1].strip()
                                     self.ir_value = value
+                                    logger.debug(f"IR value: {value}")
                                     await self.broadcast_ir_value(value)
                                 except (IndexError, ValueError) as e:
                                     logger.warning(f"Invalid IR data format: {line_str}")
+                            elif line_str:
+                                logger.debug(f"Non-data line: {line_str}")
                                     
             except asyncio.CancelledError:
                 logger.info("IR stream task cancelled")

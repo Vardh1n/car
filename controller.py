@@ -414,13 +414,41 @@ async def stream_ir():
     
     def event_stream():
         try:
+            logger.info("Starting IR event stream")
+            count = 0
             for value in ir_stream(fps=30):
+                count += 1
+                if count % 30 == 0:  # Log every second
+                    logger.info(f"IR stream: sent {count} values, current: {value}")
                 yield f"data: {value}\n\n"
         except Exception as e:
             logger.error(f"IR stream error: {e}")
             yield f"data: error:{str(e)}\n\n"
     
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_stream(), 
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
+
+# Add a simple test endpoint
+@app.get("/ir/test")
+async def test_ir():
+    """Test IR sensor directly"""
+    if not IR_AVAILABLE:
+        raise HTTPException(status_code=503, detail="IR sensor not available")
+    
+    try:
+        from ir import test_ir_sensor
+        success = test_ir_sensor()
+        return {"status": "success" if success else "failed", "message": "IR sensor test completed"}
+    except Exception as e:
+        logger.error(f"IR test error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
