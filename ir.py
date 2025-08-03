@@ -7,7 +7,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 GPIO.setmode(GPIO.BCM)
-IR_PIN = 13
+IR_PIN = 17
 
 # Try to auto-detect if sensor is active HIGH or LOW
 def detect_ir_type():
