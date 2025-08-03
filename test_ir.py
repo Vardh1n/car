@@ -3,8 +3,8 @@ import time
 
 # Test IR sensor directly
 GPIO.setmode(GPIO.BCM)
-IR_PIN = 13
-GPIO.setup(IR_PIN, GPIO.IN)
+IR_PIN = 17
+GPIO.setup(IR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
 try:
     print("Testing IR sensor directly...")
